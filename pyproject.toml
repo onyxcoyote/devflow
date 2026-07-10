@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "devflow"
+version = "0.1.0"
+description = "AI-assisted development workflows using Prefect and LangGraph"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "langchain-ollama",
+  "langchain-openai",
+  "langgraph",
+  "prefect",
+  "pydantic",
+]
+
+[project.scripts]
+devflow = "devflow.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

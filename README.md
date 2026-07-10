@@ -9,6 +9,9 @@ pip install -U prefect langgraph
 #for ollama
 python -m pip install -U langchain-ollama
 
+#openrouter
+python -m pip install -U langchain_openai
+
 
 when using
 ===============================
@@ -52,5 +55,46 @@ what it does:
 -code review 
 -run some CI steps specified in check and test
 -output evidence and results to: output/code-review/
+
+
+
+Recommended code-review workflow
+================================
+
+Install devflow in editable mode from this repository:
+
+cd ~/projects/devflow
+clone the devflow repo
+
+
+#when using
+source .venv/bin/activate
+
+#one-time to do editable install
+pip install -e .
+
+
+#Copy the example configuration into the Git repository you want to review:
+#e.g.    cp /path/to/devflow/.devflow.example.toml /path/to/project/.devflow.toml
+#Edit `.devflow.toml`, then from within your project folder you can use devflow commands.
+
+
+#before running any of the devflow commands
+cd ~/projects/projectname
+source .venv/bin/activate
+
+
+#in the project you want to review, run devflow command
+devflow review
+
+#To open the generated Markdown report after the run:
+devflow review --open
+
+
+Each run writes `review.md`, `review.json`, and `evidence.json` beneath the configured output directory. A `latest` symlink points to the newest run.
+
+For Ollama, set the model and server URL in `.devflow.toml` or use `OLLAMA_MODEL` and `OLLAMA_BASE_URL`.
+
+For OpenRouter, set `provider = "openrouter"` and export `OPENROUTER_API_KEY`.
 
 

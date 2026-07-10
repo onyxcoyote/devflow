@@ -9,4 +9,5 @@ class CodeReviewState(TypedDict):
     command_results: list[dict[str, Any]]
     review_context: str
     review: dict[str, Any]
+    assessment: dict[str, Any]
     report: str

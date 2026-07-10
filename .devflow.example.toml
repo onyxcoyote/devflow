@@ -1,0 +1,21 @@
+[review]
+base_ref = "upstream/master"
+output_dir = ".devflow/reviews"
+max_diff_chars = 40000
+max_command_output_chars = 12000
+
+[commands]
+# These are trusted commands executed directly by devflow.
+# The model cannot add or change commands.
+check = [
+  "npm run check",
+]
+test = [
+  "npm test",
+]
+
+[model]
+provider = "ollama"
+model = "your-model-name"
+base_url = "http://127.0.0.1:11434"
+temperature = 0

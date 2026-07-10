@@ -1,3 +1,5 @@
 scrap/
 __pycache__/
 output/*
+src/devflow.egg-info/
+
