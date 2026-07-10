@@ -22,6 +22,7 @@ def prepare_input(text: str) -> dict:
             "summary": "",
             "issues": [],
         },
+        "suggestion": {},
         "report": "",
     }
 

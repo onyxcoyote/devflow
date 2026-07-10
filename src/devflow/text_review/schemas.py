@@ -18,3 +18,12 @@ class AIReview(BaseModel):
         description="One concise assessment of the text."
     )
     issues: list[TextIssue]
+
+
+class TextSuggestion(BaseModel):
+    improved_text: str = Field(
+        description="A clearer rewritten version of the original text."
+    )
+    explanation: str = Field(
+        description="A concise explanation of the changes."
+    )

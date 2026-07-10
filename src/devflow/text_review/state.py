@@ -9,4 +9,5 @@ class TextReviewState(TypedDict):
     word_count: int
     character_count: int
     ai_review: dict[str, Any]
+    suggestion: dict[str, str]
     report: str

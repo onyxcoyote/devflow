@@ -5,5 +5,6 @@ from devflow.text_review.flow import text_review_flow
 
 if __name__ == "__main__":
     text_review_flow(
-        "  Hello,    this is my first structured workflow.  "
+    #    "  Hello,    this is my first structured workflow.  "
+    "The thing does stuff and maybe it should be changed because it is not good."
     )

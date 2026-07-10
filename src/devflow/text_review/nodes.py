@@ -1,8 +1,17 @@
 # src/devflow/text_review/nodes.py
 
 from .models import get_review_model
-from .schemas import AIReview
+from .schemas import AIReview, TextSuggestion
 from .state import TextReviewState
+
+
+def route_after_review(
+    state: TextReviewState,
+) -> str:
+    if state["ai_review"]["verdict"] == "needs_improvement":
+        return "suggest_improvement"
+
+    return "create_report"
 
 def normalize_text(state: TextReviewState) -> dict:
     normalized = " ".join(state["original_text"].split())
@@ -40,21 +49,55 @@ def review_text_with_ai(state: TextReviewState) -> dict:
         "ai_review": review.model_dump(),
     }
 
+def suggest_improvement(state: TextReviewState) -> dict:
+    model = get_review_model()
+    structured_model = model.with_structured_output(TextSuggestion)
+
+    issues = "\n".join(
+        f"- {issue['description']}"
+        for issue in state["ai_review"]["issues"]
+    )
+
+    prompt = (
+        "Rewrite the following text to address the identified issues.\n"
+        "Preserve its original meaning.\n"
+        "Keep the rewrite concise.\n\n"
+        f"Original text:\n{state['normalized_text']}\n\n"
+        f"Identified issues:\n{issues}"
+    )
+
+    suggestion = structured_model.invoke(prompt)
+
+    return {
+        "suggestion": suggestion.model_dump(),
+    }
+
 def create_report(state: TextReviewState) -> dict:
     review = state["ai_review"]
+    suggestion = state["suggestion"]
 
-    issue_lines = []
-
-    for issue in review["issues"]:
-        issue_lines.append(
-            f"- [{issue['severity']}] {issue['description']}"
-        )
+    issue_lines = [
+        f"- [{issue['severity']}] {issue['description']}"
+        for issue in review["issues"]
+    ]
 
     issues_text = (
         "\n".join(issue_lines)
         if issue_lines
         else "- No specific issues found."
     )
+
+    suggestion_text = ""
+
+    if suggestion:
+        suggestion_text = (
+            "\nSuggested improvement\n"
+            "---------------------\n"
+            f"{suggestion['improved_text']}\n\n"
+            "Explanation\n"
+            "-----------\n"
+            f"{suggestion['explanation']}\n"
+        )
 
     report = (
         "Text review\n"
@@ -69,6 +112,7 @@ def create_report(state: TextReviewState) -> dict:
         "Issues\n"
         "------\n"
         f"{issues_text}\n"
+        f"{suggestion_text}"
     )
 
     return {

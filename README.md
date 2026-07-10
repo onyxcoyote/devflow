@@ -1,5 +1,22 @@
 
+Setup:
+===============================
+cd ~/projects/devflow
+source .venv/bin/activate
+
+(install some stuff)
+
+
+
+
+when using
+===============================
+cd ~/projects/devflow
+source .venv/bin/activate
+
+
 Scripts:
+================================
 
 text_review
 ------------
