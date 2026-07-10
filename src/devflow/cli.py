@@ -25,7 +25,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     review.add_argument(
         "--config",
-        help="Configuration path; defaults to <repo>/.devflow.toml.",
+        help="Repository configuration path; defaults to <repo>/.devflow.toml.",
+    )
+    review.add_argument(
+        "--global-config",
+        help="Global configuration path; defaults to ~/.config/devflow/config.toml.",
+    )
+    review.add_argument(
+        "--provider",
+        choices=("ollama", "openrouter"),
+        help="Override the configured model provider for this run.",
+    )
+    review.add_argument(
+        "--model",
+        help="Override the configured model name for this run.",
     )
     review.add_argument(
         "--open",
@@ -44,11 +57,27 @@ def _open_file(path: str) -> None:
         webbrowser.open(resolved.as_uri())
 
 
+def _print_resolved_config(config) -> None:
+    print("Resolved review configuration")
+    print(f"  Provider: {config.model.provider}")
+    print(f"  Model: {config.model.model}")
+    print(f"  Endpoint: {config.model.base_url}")
+    print(f"  Repository: {config.repo_path}")
+    print(f"  Base ref: {config.base_ref}")
+    print(
+        "  Config files: "
+        + (" + ".join(config.config_sources) if config.config_sources else "built-in defaults")
+    )
+    print()
+
+
 def _print_summary(result: dict) -> None:
     assessment = result["assessment"]
     findings = assessment.get("findings", [])
     counts = {
-        severity: sum(1 for finding in findings if finding["severity"] == severity)
+        severity: sum(
+            1 for finding in findings if finding["severity"] == severity
+        )
         for severity in ("high", "medium", "low")
     }
 
@@ -66,7 +95,15 @@ def _print_summary(result: dict) -> None:
 
 
 def _run_review(args: argparse.Namespace) -> int:
-    config = load_code_review_config(args.repo, args.config)
+    config = load_code_review_config(
+        args.repo,
+        args.config,
+        global_config_path=args.global_config,
+        provider_override=args.provider,
+        model_override=args.model,
+    )
+    _print_resolved_config(config)
+
     result = code_review_flow(config)
     _print_summary(result)
 

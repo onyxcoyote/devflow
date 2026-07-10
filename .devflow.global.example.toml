@@ -1,0 +1,11 @@
+[model]
+provider = "ollama"
+temperature = 0
+
+[providers.ollama]
+model = "your-local-model"
+base_url = "http://127.0.0.1:11434"
+
+[providers.openrouter]
+model = "your-openrouter-model"
+base_url = "https://openrouter.ai/api/v1"
