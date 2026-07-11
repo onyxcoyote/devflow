@@ -15,8 +15,21 @@ python -m pip install -U langchain_openai
 
 when using
 ===============================
+#to start server
 cd ~/projects/devflow
 source .venv/bin/activate
+prefect server start
+
+#when running commands
+cd ~/projects/devflow
+source .venv/bin/activate
+
+
+Script List:
+===========
+devflow review - code review (and some relevant CI tasks like running tests)
+devflow plan - native relevant file selection (for development planning) - Not so useful except maybe using really small repos
+devflow serena-context - relevant file selection using serena MCP
 
 
 Scripts:
@@ -42,8 +55,11 @@ code_review
 how to run:
 
 cd ~/projects/devflow
+
+#variables from config files can be overridden
 OLLAMA_BASE_URL=http://YOUR_OLLAMA_IP_HERE:11434 \
 OLLAMA_MODEL=your_modelname_here \
+
 PYTHONPATH=src python scripts/run_code_review.py \
   --repo ~/projects/REPOPATH \
   --base upstream/master \
@@ -57,11 +73,24 @@ what it does:
 -output evidence and results to: output/code-review/
 
 
+devflow serena-context
+---------
+how to run:
+
+#todo: syntax differs slightly from "review" script
+
+cd ~/projects/devflow
+devflow serena-context \
+  --provider openrouter \
+  --model co\modelname_here \
+  "development goal here"
+
+
 
 develop workflow
 =================
-devflow plan "development goal here"
-(more)
+devflow serena-context "development goal here"
+(do coding)
 
 
 
@@ -105,3 +134,19 @@ For Ollama, set the model and server URL in `.devflow.toml` or use `OLLAMA_MODEL
 For OpenRouter, set `provider = "openrouter"` and export `OPENROUTER_API_KEY`.
 
 
+Configuration setup
+===================
+#global config (preferred model/provider, etc.)
+#copy from example: .devflow.global.example.toml to
+~/.config/devflow/config.toml
+#end edit
+
+#project level config (define repo path, testing commands, etc.)
+#copy from example: .devflow.example.toml to 
+$PROJECT_FOLDER/.devflow.toml
+#and edit
+#can override global
+
+#temporary overrides can be used in shell commands
+
+#parameters can also be specified in the command
