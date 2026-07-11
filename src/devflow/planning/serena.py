@@ -70,6 +70,7 @@ class SerenaSpikeConfig:
     max_total_tool_calls: int
     max_tool_result_chars: int
     max_transcript_chars: int
+    max_report_output_tokens: int
     model: Any
 
 
@@ -113,6 +114,10 @@ def load_serena_spike_config(planning: PlanningConfig) -> SerenaSpikeConfig:
         max_transcript_chars=max(
             5_000,
             int(settings.get("max_transcript_chars", 60_000)),
+        ),
+        max_report_output_tokens=max(
+            500,
+            min(10_000, int(settings.get("max_report_output_tokens", 5_000))),
         ),
         model=planning.model,
     )
@@ -191,11 +196,31 @@ def _round_focus_instruction(is_final_round: bool) -> str:
     )
 
 
+def _bounded_transcript(
+    events: list[dict[str, Any]],
+    max_chars: int,
+) -> tuple[str, int]:
+    included: list[dict[str, Any]] = []
+    for event in events:
+        candidate = json.dumps([*included, event], ensure_ascii=False, default=str)
+        if len(candidate) > max_chars:
+            break
+        included.append(event)
+    text = json.dumps(included, ensure_ascii=False, default=str)
+    if len(included) < len(events):
+        text += (
+            f"\n[Devflow included {len(included)} of {len(events)} complete events "
+            "because of the transcript limit]"
+        )
+    return text, len(included)
+
+
 async def _explore_round(
     request: str,
     config: SerenaSpikeConfig,
     session,
     model,
+    report_model,
     tools: list[dict[str, Any]],
     *,
     round_number: int,
@@ -281,11 +306,11 @@ async def _explore_round(
             ))
             calls_attempted += 1
 
-    report_model = model.with_structured_output(SerenaContextReport)
-    transcript_text = json.dumps(events, ensure_ascii=False)
-    if len(transcript_text) > config.max_transcript_chars:
-        transcript_text = transcript_text[:config.max_transcript_chars]
-        transcript_text += "\n[Transcript truncated by devflow]"
+    structured_report_model = report_model.with_structured_output(SerenaContextReport)
+    transcript_text, included_events = _bounded_transcript(
+        events,
+        config.max_transcript_chars,
+    )
     report_prompt = (
         "Create an accumulated grounded repository-context report for the development request. "
         "Merge the prior report with this round, retaining useful earlier evidence. Include only "
@@ -297,8 +322,32 @@ async def _explore_round(
         f"PRIOR REPORT\n{prior_text}\n\n"
         f"CURRENT ROUND TRANSCRIPT\n{transcript_text}"
     )
-    report = await report_model.ainvoke(report_prompt)
-    return report.model_dump(), events, calls_attempted
+    try:
+        report = await structured_report_model.ainvoke(report_prompt)
+        return report.model_dump(), events, calls_attempted, None
+    except Exception as error:
+        error_detail = {
+            "type": type(error).__name__,
+            "message": str(error)[:2_000],
+            "round": round_number,
+            "transcript_events_included": included_events,
+            "transcript_events_total": len(events),
+        }
+        blocked_report = SerenaContextReport(
+            status="blocked",
+            architecture_summary=(
+                "Serena exploration completed, but the structured context report "
+                "could not be generated."
+            ),
+            missing_context=[MissingContextItem(
+                kind="tool_failure",
+                description="The context-report model call failed.",
+                suggested_action=(
+                    "Inspect the saved Serena transcript and retry report generation."
+                ),
+            )],
+        )
+        return blocked_report.model_dump(), events, calls_attempted, error_detail
 
 
 async def _explore_with_session(request: str, config: SerenaSpikeConfig, session):
@@ -314,11 +363,16 @@ async def _explore_with_session(request: str, config: SerenaSpikeConfig, session
         raise ValueError("Serena exposed no permitted read-only retrieval tools")
 
     model = get_code_review_model(config.model)
+    report_model = get_code_review_model(
+        config.model,
+        max_output_tokens=config.max_report_output_tokens,
+    )
     executed_signatures: set[str] = set()
     all_events: list[dict[str, Any]] = []
     reports: list[dict[str, Any]] = []
     total_tool_calls = 0
     report: dict[str, Any] | None = None
+    report_errors: list[dict[str, Any]] = []
 
     for round_number in range(1, config.max_rounds + 1):
         remaining = config.max_total_tool_calls - total_tool_calls
@@ -329,11 +383,12 @@ async def _explore_with_session(request: str, config: SerenaSpikeConfig, session
             round_number == config.max_rounds
             or remaining <= round_budget
         )
-        report, events, calls = await _explore_round(
+        report, events, calls, report_error = await _explore_round(
             request,
             config,
             session,
             model,
+            report_model,
             tools,
             round_number=round_number,
             prior_report=report,
@@ -344,6 +399,8 @@ async def _explore_with_session(request: str, config: SerenaSpikeConfig, session
         total_tool_calls += calls
         all_events.extend(events)
         reports.append(report)
+        if report_error is not None:
+            report_errors.append(report_error)
         if not _should_continue(
             report,
             round_number=round_number,
@@ -360,6 +417,7 @@ async def _explore_with_session(request: str, config: SerenaSpikeConfig, session
         reports,
         [tool["function"]["name"] for tool in tools],
         total_tool_calls,
+        report_errors,
     )
 
 
@@ -380,7 +438,7 @@ async def _run_serena(request: str, config: SerenaSpikeConfig):
 
 
 def run_serena_spike(request: str, config: SerenaSpikeConfig) -> dict[str, Any]:
-    report, events, reports, available_tools, total_tool_calls = asyncio.run(
+    report, events, reports, available_tools, total_tool_calls, report_errors = asyncio.run(
         _run_serena(request, config)
     )
     root = Path(config.output_dir)
@@ -416,6 +474,8 @@ def run_serena_spike(request: str, config: SerenaSpikeConfig) -> dict[str, Any]:
             "rounds_completed": len(reports),
             "max_tool_result_chars": config.max_tool_result_chars,
             "max_transcript_chars": config.max_transcript_chars,
+            "max_report_output_tokens": config.max_report_output_tokens,
+            "report_errors": report_errors,
             "model": {
                 "provider": config.model.provider,
                 "model": config.model.model,

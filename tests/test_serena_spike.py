@@ -6,6 +6,7 @@ from devflow.planning.serena import (
     READ_ONLY_SERENA_TOOLS,
     SerenaSpikeConfig,
     _call_signature,
+    _bounded_transcript,
     _langchain_tools,
     _round_focus_instruction,
     _should_continue,
@@ -76,6 +77,7 @@ class SerenaContinuationTests(unittest.TestCase):
             max_total_tool_calls=36,
             max_tool_result_chars=8000,
             max_transcript_chars=60000,
+            max_report_output_tokens=5000,
             model=None,
         )
 
@@ -136,3 +138,18 @@ class SerenaContinuationTests(unittest.TestCase):
 
         self.assertIn("repository-answerable gaps", instruction)
         self.assertIn("user decisions", instruction)
+
+
+class SerenaTranscriptTests(unittest.TestCase):
+    def test_truncates_only_between_complete_events(self):
+        events = [
+            {"tool": "find_symbol", "result": "first"},
+            {"tool": "read_file", "result": "x" * 500},
+        ]
+
+        text, included = _bounded_transcript(events, 100)
+
+        self.assertEqual(included, 1)
+        self.assertIn('"find_symbol"', text)
+        self.assertNotIn('"read_file"', text)
+        self.assertIn("1 of 2 complete events", text)

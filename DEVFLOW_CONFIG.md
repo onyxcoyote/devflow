@@ -90,6 +90,7 @@ max_tool_calls_per_round = 12
 max_total_tool_calls = 36
 max_tool_result_chars = 8000
 max_transcript_chars = 60000
+max_report_output_tokens = 5000
 ```
 
 Then compare Serena's grounded context report and transcript with the native
