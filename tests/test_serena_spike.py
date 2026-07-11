@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from devflow.planning.serena import (
     READ_ONLY_SERENA_TOOLS,
     SerenaSpikeConfig,
+    SerenaContextReport,
     _call_signature,
     _bounded_transcript,
     _langchain_tools,
@@ -153,3 +154,24 @@ class SerenaTranscriptTests(unittest.TestCase):
         self.assertIn('"find_symbol"', text)
         self.assertNotIn('"read_file"', text)
         self.assertIn("1 of 2 complete events", text)
+
+
+class SerenaReportSchemaTests(unittest.TestCase):
+    def test_accepts_concise_structured_evidence(self):
+        report = SerenaContextReport(
+            status="sufficient",
+            architecture_summary="Planning is coordinated by the planning graph.",
+            evidence=[{
+                "claim": "The graph invokes the planning node.",
+                "source": "src/devflow/planning/graph.py:build_planning_graph",
+            }],
+        )
+
+        self.assertEqual(report.evidence[0].claim, "The graph invokes the planning node.")
+
+    def test_rejects_oversized_architecture_summary(self):
+        with self.assertRaises(ValueError):
+            SerenaContextReport(
+                status="sufficient",
+                architecture_summary="x" * 3001,
+            )

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -26,10 +26,20 @@ READ_ONLY_SERENA_TOOLS = {
 }
 
 
+PathText = Annotated[str, Field(max_length=500)]
+SymbolText = Annotated[str, Field(max_length=300)]
+EvidenceText = Annotated[str, Field(max_length=500)]
+
+
 class RelevantFile(BaseModel):
-    path: str
-    reason: str
-    symbols: list[str] = Field(default_factory=list)
+    path: PathText
+    reason: str = Field(max_length=800)
+    symbols: list[SymbolText] = Field(default_factory=list, max_length=20)
+
+
+class ContextEvidence(BaseModel):
+    claim: EvidenceText
+    source: EvidenceText
 
 
 class MissingContextItem(BaseModel):
@@ -39,10 +49,10 @@ class MissingContextItem(BaseModel):
         "tool_failure",
         "external_information",
     ]
-    description: str
-    suggested_action: str
-    related_files: list[str] = Field(default_factory=list)
-    related_symbols: list[str] = Field(default_factory=list)
+    description: str = Field(max_length=1000)
+    suggested_action: str = Field(max_length=1000)
+    related_files: list[PathText] = Field(default_factory=list, max_length=10)
+    related_symbols: list[SymbolText] = Field(default_factory=list, max_length=20)
 
 
 class SerenaContextReport(BaseModel):
@@ -52,11 +62,14 @@ class SerenaContextReport(BaseModel):
         "needs_user_decision",
         "blocked",
     ]
-    architecture_summary: str
-    relevant_files: list[RelevantFile] = Field(default_factory=list)
-    relevant_symbols: list[str] = Field(default_factory=list)
-    evidence: list[str] = Field(default_factory=list)
-    missing_context: list[MissingContextItem] = Field(default_factory=list)
+    architecture_summary: str = Field(max_length=3000)
+    relevant_files: list[RelevantFile] = Field(default_factory=list, max_length=30)
+    relevant_symbols: list[SymbolText] = Field(default_factory=list, max_length=50)
+    evidence: list[ContextEvidence] = Field(default_factory=list, max_length=30)
+    missing_context: list[MissingContextItem] = Field(
+        default_factory=list,
+        max_length=10,
+    )
 
 
 @dataclass(frozen=True)
@@ -317,37 +330,53 @@ async def _explore_round(
         "paths and symbols supported by tool results. Classify every missing item as repository, "
         "user_decision, tool_failure, or external_information. Use needs_repository_context only "
         "for gaps that another Serena round could answer; use needs_user_decision for genuine "
-        "requirement ambiguity; use blocked for tool failures; otherwise use sufficient.\n\n"
+        "requirement ambiguity; use blocked for tool failures; otherwise use sufficient. "
+        "Be concise. Do not copy source code, tool results, or the transcript into the report. "
+        "Represent evidence only as short factual claims paired with file paths or symbol names. "
+        "Keep the complete report comfortably below the output-token limit.\n\n"
         f"DEVELOPMENT REQUEST\n{request}\n\n"
         f"PRIOR REPORT\n{prior_text}\n\n"
         f"CURRENT ROUND TRANSCRIPT\n{transcript_text}"
     )
-    try:
-        report = await structured_report_model.ainvoke(report_prompt)
-        return report.model_dump(), events, calls_attempted, None
-    except Exception as error:
-        error_detail = {
-            "type": type(error).__name__,
-            "message": str(error)[:2_000],
-            "round": round_number,
-            "transcript_events_included": included_events,
-            "transcript_events_total": len(events),
-        }
-        blocked_report = SerenaContextReport(
-            status="blocked",
-            architecture_summary=(
-                "Serena exploration completed, but the structured context report "
-                "could not be generated."
+    attempt_errors: list[dict[str, Any]] = []
+    prompts = [
+        report_prompt,
+        (
+            "The previous report-formatting attempt failed or exceeded its output limit. "
+            "Retry once with an especially compact report. Do not reproduce code or transcript "
+            "content. Include only the most important grounded files, symbols, short evidence, "
+            "and unresolved items.\n\n" + report_prompt
+        ),
+    ]
+    for attempt, prompt in enumerate(prompts, start=1):
+        try:
+            report = await structured_report_model.ainvoke(prompt)
+            return report.model_dump(), events, calls_attempted, attempt_errors
+        except Exception as error:
+            attempt_errors.append({
+                "attempt": attempt,
+                "type": type(error).__name__,
+                "message": str(error)[:2_000],
+                "round": round_number,
+                "transcript_events_included": included_events,
+                "transcript_events_total": len(events),
+            })
+
+    blocked_report = SerenaContextReport(
+        status="blocked",
+        architecture_summary=(
+            "Serena exploration completed, but the structured context report "
+            "could not be generated after two attempts."
+        ),
+        missing_context=[MissingContextItem(
+            kind="tool_failure",
+            description="Both context-report model calls failed.",
+            suggested_action=(
+                "Inspect the saved Serena transcript and retry report generation."
             ),
-            missing_context=[MissingContextItem(
-                kind="tool_failure",
-                description="The context-report model call failed.",
-                suggested_action=(
-                    "Inspect the saved Serena transcript and retry report generation."
-                ),
-            )],
-        )
-        return blocked_report.model_dump(), events, calls_attempted, error_detail
+        )],
+    )
+    return blocked_report.model_dump(), events, calls_attempted, attempt_errors
 
 
 async def _explore_with_session(request: str, config: SerenaSpikeConfig, session):
@@ -383,7 +412,7 @@ async def _explore_with_session(request: str, config: SerenaSpikeConfig, session
             round_number == config.max_rounds
             or remaining <= round_budget
         )
-        report, events, calls, report_error = await _explore_round(
+        report, events, calls, round_report_errors = await _explore_round(
             request,
             config,
             session,
@@ -399,8 +428,7 @@ async def _explore_with_session(request: str, config: SerenaSpikeConfig, session
         total_tool_calls += calls
         all_events.extend(events)
         reports.append(report)
-        if report_error is not None:
-            report_errors.append(report_error)
+        report_errors.extend(round_report_errors)
         if not _should_continue(
             report,
             round_number=round_number,
@@ -483,6 +511,10 @@ def run_serena_spike(request: str, config: SerenaSpikeConfig) -> dict[str, Any]:
         }, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    latest = root / "latest"
+    if latest.is_symlink() or latest.exists():
+        latest.unlink()
+    latest.symlink_to(Path("runs") / run_dir.name, target_is_directory=True)
     return {
         "report": report,
         "paths": {
