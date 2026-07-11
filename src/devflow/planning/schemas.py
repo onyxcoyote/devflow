@@ -3,6 +3,12 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class PlanningContextRequest(BaseModel):
+    files: list[str] = Field(default_factory=list, max_length=10)
+    searches: list[str] = Field(default_factory=list, max_length=10)
+    reason: str
+
+
 class ProposedChange(BaseModel):
     area: str
     description: str

@@ -12,6 +12,9 @@ class PlanningConfig:
     repo_path: str
     output_dir: str
     max_context_chars: int
+    max_requested_files: int
+    max_searches: int
+    max_search_results_chars: int
     save_model_exchange: bool
     model: ModelConfig
     config_sources: tuple[str, ...]
@@ -49,6 +52,17 @@ def load_planning_config(
         repo_path=shared.repo_path,
         output_dir=str(output_dir),
         max_context_chars=int(settings.get("max_context_chars", 30_000)),
+        max_requested_files=min(
+            10,
+            max(0, int(settings.get("max_requested_files", 8))),
+        ),
+        max_searches=min(
+            10,
+            max(0, int(settings.get("max_searches", 6))),
+        ),
+        max_search_results_chars=int(
+            settings.get("max_search_results_chars", 12_000)
+        ),
         save_model_exchange=bool(settings.get("save_model_exchange", False)),
         model=shared.model,
         config_sources=shared.config_sources,

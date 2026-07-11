@@ -5,7 +5,8 @@ from time import perf_counter
 
 from devflow.code_review.nodes import _model_result_metadata, _raw_response_data
 
-from .schemas import DevelopmentPlan
+from .context import gather_requested_context
+from .schemas import DevelopmentPlan, PlanningContextRequest
 from .state import PlanningState
 
 
@@ -16,6 +17,89 @@ def prepare_plan_context(state: PlanningState) -> dict:
             indent=2,
             ensure_ascii=False,
         )
+    }
+
+
+def make_context_request_node(model):
+    structured_model = model.with_structured_output(
+        PlanningContextRequest,
+        include_raw=True,
+    )
+
+    def request_context(state: PlanningState) -> dict:
+        initial_context = json.dumps(
+            state["repository_context"],
+            indent=2,
+            ensure_ascii=False,
+        )
+        prompt = (
+            "You are selecting repository context needed to plan a development request.\n"
+            "Do not create the development plan yet. Request only the most useful specific files "
+            "and literal text searches needed to understand architecture, existing behavior, tests, "
+            "and conventions.\n"
+            f"Request at most {state['max_requested_files']} files and "
+            f"{state['max_searches']} searches.\n"
+            "File paths must appear in the directory summary. Search strings should be concise "
+            "identifiers or phrases likely to occur in source code. Do not request generated assets, "
+            "dependency directories, binary files, or the entire repository.\n\n"
+            f"DEVELOPMENT REQUEST\n===================\n{state['request']}\n\n"
+            f"INITIAL REPOSITORY CONTEXT\n==========================\n{initial_context}"
+        )
+
+        started_at = perf_counter()
+        result = structured_model.invoke(prompt)
+        elapsed_seconds = perf_counter() - started_at
+        raw_response = result["raw"]
+        parsed_request = result["parsed"]
+        parsing_error = result["parsing_error"]
+        metadata = _model_result_metadata(
+            raw_response,
+            parsing_error,
+            elapsed_seconds,
+        )
+        if parsing_error is not None or parsed_request is None:
+            context_request = {
+                "files": [],
+                "searches": [],
+                "reason": "The model context request could not be parsed.",
+            }
+        else:
+            context_request = parsed_request.model_dump()
+
+        model_result = {
+            **state["model_result"],
+            "context_request": metadata,
+        }
+        model_exchange = dict(state["model_exchange"])
+        if state["save_model_exchange"]:
+            model_exchange["context_request"] = {
+                "request": {"prompt": prompt},
+                "response": _raw_response_data(raw_response),
+            }
+        return {
+            "context_request": context_request,
+            "model_result": model_result,
+            "model_exchange": model_exchange,
+        }
+
+    return request_context
+
+
+def gather_plan_context(state: PlanningState) -> dict:
+    requested_context = gather_requested_context(
+        state["repo_path"],
+        state["tracked_files"],
+        state["context_request"],
+        max_requested_files=state["max_requested_files"],
+        max_searches=state["max_searches"],
+        max_context_chars=state["max_context_chars"],
+        max_search_results_chars=state["max_search_results_chars"],
+    )
+    return {
+        "repository_context": {
+            **state["repository_context"],
+            "requested_context": requested_context,
+        }
     }
 
 
@@ -47,26 +131,25 @@ def make_plan_node(model):
         raw_response = result["raw"]
         parsed_plan = result["parsed"]
         parsing_error = result["parsing_error"]
-        model_result = _model_result_metadata(
+        plan_metadata = _model_result_metadata(
             raw_response,
             parsing_error,
             elapsed_seconds,
         )
-        model_exchange = (
-            {
+        model_result = {**state["model_result"], "plan": plan_metadata}
+        model_exchange = dict(state["model_exchange"])
+        if state["save_model_exchange"]:
+            model_exchange["plan"] = {
                 "request": {"prompt": prompt},
                 "response": _raw_response_data(raw_response),
             }
-            if state["save_model_exchange"]
-            else {}
-        )
 
-        response_truncated = model_result["finish_reason"] in {"length", "max_tokens"}
+        response_truncated = plan_metadata["finish_reason"] in {"length", "max_tokens"}
         if response_truncated or parsing_error is not None or parsed_plan is None:
             detail = (
                 "The model response reached its output-token limit."
                 if response_truncated
-                else model_result["parsing_error"] or "No parsed plan was returned."
+                else plan_metadata["parsing_error"] or "No parsed plan was returned."
             )
             plan = {
                 "status": "needs_context",

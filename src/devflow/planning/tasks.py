@@ -11,11 +11,11 @@ from prefect import get_run_logger, task
 from devflow.code_review.models import get_code_review_model
 
 from .config import PlanningConfig
+from .context import directory_summary
 from .graph import build_planning_graph
 
-CONTEXT_FILES = (
+INITIAL_CONTEXT_FILES = (
     "AGENTS.md",
-    "README.md",
     "pyproject.toml",
     "package.json",
     "Cargo.toml",
@@ -53,22 +53,22 @@ def collect_repository_context(config: PlanningConfig) -> dict[str, Any]:
         text=True,
         check=True,
     ).stdout
-    tracked_files = subprocess.run(
+    tracked_files_text = subprocess.run(
         ["git", "ls-files"],
         cwd=repo,
         capture_output=True,
         text=True,
         check=True,
     ).stdout
+    tracked_files = [line for line in tracked_files_text.splitlines() if line]
 
     context: dict[str, Any] = {
         "head_commit": head,
         "git_status": status or "(clean)",
-        "tracked_files": tracked_files,
+        "directory_summary": directory_summary(tracked_files),
         "key_files": {},
-        "context_truncated": False,
     }
-    for name in CONTEXT_FILES:
+    for name in INITIAL_CONTEXT_FILES:
         path = repo / name
         if path.is_file():
             context["key_files"][name] = path.read_text(
@@ -76,21 +76,17 @@ def collect_repository_context(config: PlanningConfig) -> dict[str, Any]:
                 errors="replace",
             )
 
+    initial_budget = max(1, config.max_context_chars // 3)
     serialized = json.dumps(context, ensure_ascii=False)
-    if len(serialized) > config.max_context_chars:
-        context["context_truncated"] = True
-        file_budget = config.max_context_chars // 2
-        context["tracked_files"] = tracked_files[:file_budget]
+    context["initial_context_truncated"] = len(serialized) > initial_budget
+    if context["initial_context_truncated"]:
         key_files = context["key_files"]
-        per_file_budget = max(
-            0,
-            (config.max_context_chars - file_budget) // max(1, len(key_files)),
-        )
+        per_file_budget = initial_budget // max(1, len(key_files))
         context["key_files"] = {
             name: contents[:per_file_budget]
             for name, contents in key_files.items()
         }
-    return context
+    return {"repository_context": context, "tracked_files": tracked_files}
 
 
 @task
@@ -127,6 +123,7 @@ def save_plan_outputs(final_state: dict[str, Any], output_dir: str) -> dict[str,
                 "request": final_state["request"],
                 "repo_path": final_state["repo_path"],
                 "repository_context": final_state["repository_context"],
+                "context_request": final_state["context_request"],
                 "model_info": final_state["model_info"],
                 "model_result": final_state["model_result"],
             },

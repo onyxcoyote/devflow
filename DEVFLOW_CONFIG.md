@@ -57,6 +57,9 @@ Development planning uses a separate section:
 [plan]
 output_dir = ".devflow/plans"
 max_context_chars = 30000
+max_requested_files = 8
+max_searches = 6
+max_search_results_chars = 12000
 save_model_exchange = false
 ```
 
