@@ -20,6 +20,8 @@ def code_review_flow(config: CodeReviewConfig) -> dict:
             "temperature": config.model.temperature,
         },
         "model_result": {},
+        "save_model_exchange": config.save_model_exchange,
+        "model_exchange": {},
         "review_context": "",
         "review": {},
         "assessment": {},

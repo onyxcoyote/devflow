@@ -28,6 +28,7 @@ class CodeReviewConfig:
     test_commands: tuple[tuple[str, ...], ...] = ()
     max_diff_chars: int = 40_000
     max_command_output_chars: int = 12_000
+    save_model_exchange: bool = False
     model: ModelConfig = ModelConfig(
         provider="ollama",
         model="",
@@ -155,6 +156,7 @@ def load_code_review_config(
         max_command_output_chars=int(
             review.get("max_command_output_chars", 12_000)
         ),
+        save_model_exchange=bool(review.get("save_model_exchange", False)),
         model=ModelConfig(
             provider=provider_name,
             model=model_name,

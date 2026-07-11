@@ -13,3 +13,5 @@ class CodeReviewState(TypedDict):
     report: str
     model_info: dict[str, Any]
     model_result: dict[str, Any]
+    save_model_exchange: bool
+    model_exchange: dict[str, Any]

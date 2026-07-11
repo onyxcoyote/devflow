@@ -154,6 +154,7 @@ def save_review_outputs(
     markdown_path = run_dir / "review.md"
     json_path = run_dir / "review.json"
     evidence_path = run_dir / "evidence.json"
+    exchange_path = run_dir / "model-exchange.json"
 
     markdown_path.write_text(final_state["report"], encoding="utf-8")
     json_path.write_text(
@@ -178,14 +179,27 @@ def save_review_outputs(
         ),
         encoding="utf-8",
     )
+    if final_state["save_model_exchange"]:
+        exchange_path.write_text(
+            json.dumps(
+                final_state["model_exchange"],
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            ),
+            encoding="utf-8",
+        )
 
     latest = root / "latest"
     if latest.is_symlink() or latest.exists():
         latest.unlink()
     latest.symlink_to(Path("runs") / run_dir.name, target_is_directory=True)
 
-    return {
+    paths = {
         "markdown": str(markdown_path.resolve()),
         "json": str(json_path.resolve()),
         "evidence": str(evidence_path.resolve()),
     }
+    if final_state["save_model_exchange"]:
+        paths["model_exchange"] = str(exchange_path.resolve())
+    return paths

@@ -3,6 +3,9 @@ base_ref = "upstream/master"
 output_dir = ".devflow/reviews"
 max_diff_chars = 40000
 max_command_output_chars = 12000
+# Saves the full prompt and raw LangChain response. This may contain source code,
+# command output, or secrets, so enable it only when needed for debugging.
+save_model_exchange = false
 
 [commands]
 # These are trusted commands executed directly by devflow.
@@ -19,3 +22,4 @@ provider = "ollama"
 model = "your-model-name"
 base_url = "http://127.0.0.1:11434"
 temperature = 0
+

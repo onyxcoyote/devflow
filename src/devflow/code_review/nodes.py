@@ -47,6 +47,23 @@ def _model_result_metadata(raw_response, parsing_error, elapsed_seconds: float) 
     }
 
 
+def _raw_response_data(raw_response) -> dict:
+    model_dump = getattr(raw_response, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return model_dump(mode="json")
+        except (TypeError, ValueError):
+            return model_dump()
+
+    return {
+        "id": getattr(raw_response, "id", None),
+        "content": getattr(raw_response, "content", None),
+        "additional_kwargs": getattr(raw_response, "additional_kwargs", {}),
+        "response_metadata": getattr(raw_response, "response_metadata", {}),
+        "usage_metadata": getattr(raw_response, "usage_metadata", None),
+    }
+
+
 def prepare_review_context(state: CodeReviewState) -> dict:
     command_text = json.dumps(state["command_results"], indent=2, ensure_ascii=False)
     truncation_note = (
@@ -110,6 +127,14 @@ def make_review_node(model):
             parsing_error,
             elapsed_seconds,
         )
+        model_exchange = (
+            {
+                "request": {"prompt": prompt},
+                "response": _raw_response_data(raw_response),
+            }
+            if state["save_model_exchange"]
+            else {}
+        )
 
         finish_reason = model_result["finish_reason"]
 
@@ -147,6 +172,7 @@ def make_review_node(model):
 
             return {
                 "model_result": model_result,
+                "model_exchange": model_exchange,
                 "review": {
                     "verdict": "insufficient_context",
                     "confidence": "low",
@@ -161,6 +187,7 @@ def make_review_node(model):
 
         return {
             "model_result": model_result,
+            "model_exchange": model_exchange,
             "review": parsed_review.model_dump(),
         }
 

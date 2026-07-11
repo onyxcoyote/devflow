@@ -1,7 +1,11 @@
 import unittest
 from types import SimpleNamespace
 
-from devflow.code_review.nodes import _model_result_metadata, assess_review
+from devflow.code_review.nodes import (
+    _model_result_metadata,
+    _raw_response_data,
+    assess_review,
+)
 
 
 def review(**overrides):
@@ -130,6 +134,32 @@ class ModelResultMetadataTests(unittest.TestCase):
         self.assertEqual(result["total_tokens"], 60)
         self.assertFalse(result["parsing_succeeded"])
         self.assertEqual(result["parsing_error"], "invalid response")
+
+
+class RawResponseDataTests(unittest.TestCase):
+    def test_uses_json_model_dump_when_available(self):
+        class Response:
+            def model_dump(self, *, mode=None):
+                return {"mode": mode, "content": "review"}
+
+        result = _raw_response_data(Response())
+
+        self.assertEqual(result, {"mode": "json", "content": "review"})
+
+    def test_falls_back_to_common_message_attributes(self):
+        raw_response = SimpleNamespace(
+            id="response-123",
+            content="review",
+            additional_kwargs={"tool_calls": []},
+            response_metadata={"finish_reason": "stop"},
+            usage_metadata={"total_tokens": 12},
+        )
+
+        result = _raw_response_data(raw_response)
+
+        self.assertEqual(result["id"], "response-123")
+        self.assertEqual(result["content"], "review")
+        self.assertEqual(result["response_metadata"]["finish_reason"], "stop")
 
 
 if __name__ == "__main__":
