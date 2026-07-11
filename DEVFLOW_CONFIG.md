@@ -51,6 +51,21 @@ check = ["npm run check"]
 test = ["npm test --workspace @solaris/common"]
 ```
 
+Development planning uses a separate section:
+
+```toml
+[plan]
+output_dir = ".devflow/plans"
+max_context_chars = 30000
+save_model_exchange = false
+```
+
+Run a read-only plan with:
+
+```bash
+devflow plan "Describe the development outcome"
+```
+
 A repository may override `[model]` or `[providers.*]`, but normally it does not need to.
 
 ## One-run overrides

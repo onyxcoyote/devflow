@@ -7,6 +7,11 @@ max_command_output_chars = 12000
 # command output, or secrets, so enable it only when needed for debugging.
 save_model_exchange = false
 
+[plan]
+output_dir = ".devflow/plans"
+max_context_chars = 30000
+save_model_exchange = false
+
 [commands]
 # These are trusted commands executed directly by devflow.
 # The model cannot add or change commands.
@@ -22,4 +27,3 @@ provider = "ollama"
 model = "your-model-name"
 base_url = "http://127.0.0.1:11434"
 temperature = 0
-
