@@ -19,6 +19,7 @@ def code_review_flow(config: CodeReviewConfig) -> dict:
             "base_url": config.model.base_url,
             "temperature": config.model.temperature,
         },
+        "model_result": {},
         "review_context": "",
         "review": {},
         "assessment": {},

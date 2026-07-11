@@ -1,12 +1,51 @@
 from __future__ import annotations
 
 import json
+import logging
+from time import perf_counter
 
 from .schemas import CodeReview
 from .state import CodeReviewState
-import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _model_result_metadata(raw_response, parsing_error, elapsed_seconds: float) -> dict:
+    response_metadata = getattr(raw_response, "response_metadata", {}) or {}
+    usage_metadata = getattr(raw_response, "usage_metadata", {}) or {}
+    token_usage = response_metadata.get("token_usage", {}) or {}
+
+    input_tokens = (
+        usage_metadata.get("input_tokens")
+        or token_usage.get("prompt_tokens")
+    )
+    output_tokens = (
+        usage_metadata.get("output_tokens")
+        or token_usage.get("completion_tokens")
+    )
+    total_tokens = (
+        usage_metadata.get("total_tokens")
+        or token_usage.get("total_tokens")
+    )
+
+    return {
+        "response_id": getattr(raw_response, "id", None),
+        "finish_reason": (
+            response_metadata.get("finish_reason")
+            or response_metadata.get("done_reason")
+        ),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "parsing_succeeded": parsing_error is None,
+        "parsing_error": (
+            str(parsing_error)[:1000]
+            if parsing_error is not None
+            else None
+        ),
+    }
+
 
 def prepare_review_context(state: CodeReviewState) -> dict:
     command_text = json.dumps(state["command_results"], indent=2, ensure_ascii=False)
@@ -59,17 +98,20 @@ def make_review_node(model):
             "uncertainties, and overall confidence are mutually consistent.\n\n"
             f"{state['review_context']}"
         )
+        started_at = perf_counter()
         result = structured_model.invoke(prompt)
+        elapsed_seconds = perf_counter() - started_at
 
         raw_response = result["raw"]
         parsed_review = result["parsed"]
         parsing_error = result["parsing_error"]
-
-        response_metadata = getattr(raw_response, "response_metadata", {})
-        finish_reason = (
-            response_metadata.get("finish_reason")
-            or response_metadata.get("done_reason")
+        model_result = _model_result_metadata(
+            raw_response,
+            parsing_error,
+            elapsed_seconds,
         )
+
+        finish_reason = model_result["finish_reason"]
 
         if finish_reason in {"length", "max_tokens"}:
             error_summary = (
@@ -101,16 +143,10 @@ def make_review_node(model):
                 for index, command_result in enumerate(state["command_results"])
             ]
 
-            parsing_detail = (
-                f" Parser detail: {parsing_error}"
-                if parsing_error is not None
-                else ""
-            )
-
-            #limit error text to 1000 characters 
-            parsing_detail = str(parsing_error)[:1000]
+            parsing_detail = model_result["parsing_error"] or "None reported."
 
             return {
+                "model_result": model_result,
                 "review": {
                     "verdict": "insufficient_context",
                     "confidence": "low",
@@ -123,7 +159,10 @@ def make_review_node(model):
                 }
             }
 
-        return {"review": parsed_review.model_dump()}
+        return {
+            "model_result": model_result,
+            "review": parsed_review.model_dump(),
+        }
 
     return review_code
 

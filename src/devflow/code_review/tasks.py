@@ -170,6 +170,7 @@ def save_review_outputs(
                     "diff_truncated",
                     "command_results",
                     "model_info",
+                    "model_result",
                 )
             },
             indent=2,
