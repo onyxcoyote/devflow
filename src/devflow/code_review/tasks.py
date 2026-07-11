@@ -169,6 +169,7 @@ def save_review_outputs(
                     "changed_files",
                     "diff_truncated",
                     "command_results",
+                    "model_info",
                 )
             },
             indent=2,

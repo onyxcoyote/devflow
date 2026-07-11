@@ -10,9 +10,19 @@ def code_review_flow(config: CodeReviewConfig) -> dict:
     change = collect_change(config)
     command_results = run_configured_commands(config)
     final_state = run_code_review_graph({
-        "base_ref": config.base_ref, "changed_files": change["changed_files"], "diff": change["diff"],
-        "diff_truncated": change["diff_truncated"], "command_results": command_results,
-        "review_context": "", "review": {}, "assessment": {}, "report": "",
+        "base_ref": config.base_ref,
+        **change,
+        "command_results": command_results,
+        "model_info": {
+            "provider": config.model.provider,
+            "model": config.model.model,
+            "base_url": config.model.base_url,
+            "temperature": config.model.temperature,
+        },
+        "review_context": "",
+        "review": {},
+        "assessment": {},
+        "report": "",
     }, config)
     paths = save_review_outputs(final_state, config.output_dir)
     return {"assessment": final_state["assessment"], "paths": paths}

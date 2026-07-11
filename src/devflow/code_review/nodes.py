@@ -186,9 +186,21 @@ def assess_review(state: CodeReviewState) -> dict:
 
 def create_report(state: CodeReviewState) -> dict:
     assessment = state["assessment"]
+    model_info = state["model_info"]
+
     lines = [
-        "# Code review", "", f"**Verdict:** `{assessment['verdict']}`", f"**Score:** `{assessment['score']}/100`",
-        f"**Confidence:** `{assessment['confidence']}`", "", assessment["summary"], "", "## Findings", "",
+        "# Code review",
+        "",
+        f"**Model:** `{model_info['model']}`",
+        f"**Provider:** `{model_info['provider']}`",
+        f"**Verdict:** `{assessment['verdict']}`",
+        f"**Score:** `{assessment['score']}/100`",
+        f"**Confidence:** `{assessment['confidence']}`",
+        "",
+        assessment["summary"],
+        "",
+        "## Findings",
+        "",
     ]
     if assessment["findings"]:
         for index, finding in enumerate(assessment["findings"], start=1):

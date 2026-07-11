@@ -11,3 +11,4 @@ class CodeReviewState(TypedDict):
     review: dict[str, Any]
     assessment: dict[str, Any]
     report: str
+    model_info: dict[str, Any]
