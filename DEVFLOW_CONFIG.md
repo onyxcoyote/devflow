@@ -69,6 +69,37 @@ Run a read-only plan with:
 devflow plan "Describe the development outcome"
 ```
 
+## Experimental Serena context spike
+
+Install and initialize Serena before using the spike:
+
+```bash
+uv tool install -p 3.13 serena-agent
+serena init
+```
+
+Configure the read-only context-discovery process:
+
+```toml
+[serena]
+output_dir = ".devflow/serena-spikes"
+command = "serena"
+args = ["start-mcp-server", "--context", "ide", "--project", "{repo}"]
+max_tool_calls = 12
+max_tool_result_chars = 8000
+max_transcript_chars = 60000
+```
+
+Then compare Serena's grounded context report and transcript with the native
+planning context:
+
+```bash
+devflow serena-context "Describe the development outcome"
+```
+
+Devflow exposes only Serena retrieval tools during this spike. Editing, shell,
+memory-writing, and project-mutation tools are not available to the model.
+
 A repository may override `[model]` or `[providers.*]`, but normally it does not need to.
 
 ## One-run overrides

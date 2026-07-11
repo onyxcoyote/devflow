@@ -7,6 +7,14 @@ max_command_output_chars = 12000
 # command output, or secrets, so enable it only when needed for debugging.
 save_model_exchange = false
 
+[serena]
+output_dir = ".devflow/serena-spikes"
+command = "serena"
+args = ["start-mcp-server", "--context", "ide", "--project", "{repo}"]
+max_tool_calls = 12
+max_tool_result_chars = 8000
+max_transcript_chars = 60000
+
 [plan]
 output_dir = ".devflow/plans"
 max_context_chars = 30000

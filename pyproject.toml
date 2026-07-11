@@ -12,6 +12,7 @@ dependencies = [
   "langchain-ollama",
   "langchain-openai",
   "langgraph",
+  "mcp>=1.9,<2",
   "prefect",
   "pydantic",
 ]
