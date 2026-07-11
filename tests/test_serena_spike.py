@@ -7,6 +7,7 @@ from devflow.planning.serena import (
     SerenaSpikeConfig,
     _call_signature,
     _langchain_tools,
+    _round_focus_instruction,
     _should_continue,
     _tool_result_text,
 )
@@ -72,7 +73,7 @@ class SerenaContinuationTests(unittest.TestCase):
             args=(),
             max_rounds=3,
             max_tool_calls_per_round=12,
-            max_total_tool_calls=24,
+            max_total_tool_calls=36,
             max_tool_result_chars=8000,
             max_transcript_chars=60000,
             model=None,
@@ -113,7 +114,7 @@ class SerenaContinuationTests(unittest.TestCase):
         self.assertFalse(_should_continue(
             report,
             round_number=2,
-            total_tool_calls=24,
+            total_tool_calls=36,
             config=self.config(),
         ))
 
@@ -122,3 +123,16 @@ class SerenaContinuationTests(unittest.TestCase):
         second = _call_signature("find_symbol", {"depth": 1, "name": "Plan"})
 
         self.assertEqual(first, second)
+
+    def test_final_round_prioritizes_known_repository_gaps(self):
+        instruction = _round_focus_instruction(True)
+
+        self.assertIn("inspect that file first", instruction)
+        self.assertIn("schema and type references", instruction)
+        self.assertIn("preserve them for the human", instruction)
+
+    def test_nonfinal_round_keeps_user_decisions_separate(self):
+        instruction = _round_focus_instruction(False)
+
+        self.assertIn("repository-answerable gaps", instruction)
+        self.assertIn("user decisions", instruction)

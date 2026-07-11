@@ -104,7 +104,7 @@ def load_serena_spike_config(planning: PlanningConfig) -> SerenaSpikeConfig:
         ),
         max_total_tool_calls=max(
             1,
-            min(60, int(settings.get("max_total_tool_calls", 24))),
+            min(60, int(settings.get("max_total_tool_calls", 36))),
         ),
         max_tool_result_chars=max(
             500,
@@ -175,6 +175,22 @@ def _should_continue(
     )
 
 
+def _round_focus_instruction(is_final_round: bool) -> str:
+    if not is_final_round:
+        return (
+            "Focus this round on repository-answerable gaps from the prior report. Preserve "
+            "genuine requirement ambiguities as user decisions rather than inventing an answer."
+        )
+    return (
+        "This is the final available context round. Resolve specific repository gaps from the "
+        "prior report before exploring anything new. If a relevant file path is already known, "
+        "inspect that file first. If a named symbol is missing, locate and inspect it. Follow "
+        "schema and type references discovered in those files. Do not investigate user-decision "
+        "items; preserve them for the human. Do not broaden the search unless resolving a listed "
+        "gap requires it."
+    )
+
+
 async def _explore_round(
     request: str,
     config: SerenaSpikeConfig,
@@ -186,6 +202,7 @@ async def _explore_round(
     prior_report: dict[str, Any] | None,
     executed_signatures: set[str],
     tool_call_budget: int,
+    is_final_round: bool,
 ):
     try:
         from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -207,8 +224,7 @@ async def _explore_round(
             f"Development request:\n{request}\n\n"
             f"Exploration round: {round_number}\n"
             f"Prior grounded report:\n{prior_text}\n\n"
-            "Focus this round on repository-answerable gaps from the prior report. Preserve genuine "
-            "requirement ambiguities as user decisions rather than trying to invent an answer."
+            f"{_round_focus_instruction(is_final_round)}"
         )),
     ]
     events: list[dict[str, Any]] = []
@@ -309,6 +325,10 @@ async def _explore_with_session(request: str, config: SerenaSpikeConfig, session
         if remaining <= 0:
             break
         round_budget = min(config.max_tool_calls_per_round, remaining)
+        is_final_round = (
+            round_number == config.max_rounds
+            or remaining <= round_budget
+        )
         report, events, calls = await _explore_round(
             request,
             config,
@@ -319,6 +339,7 @@ async def _explore_with_session(request: str, config: SerenaSpikeConfig, session
             prior_report=report,
             executed_signatures=executed_signatures,
             tool_call_budget=round_budget,
+            is_final_round=is_final_round,
         )
         total_tool_calls += calls
         all_events.extend(events)

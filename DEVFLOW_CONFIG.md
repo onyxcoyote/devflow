@@ -87,7 +87,7 @@ command = "serena"
 args = ["start-mcp-server", "--context", "ide", "--project", "{repo}"]
 max_rounds = 3
 max_tool_calls_per_round = 12
-max_total_tool_calls = 24
+max_total_tool_calls = 36
 max_tool_result_chars = 8000
 max_transcript_chars = 60000
 ```
