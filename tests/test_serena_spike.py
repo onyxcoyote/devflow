@@ -4,7 +4,10 @@ from types import SimpleNamespace
 
 from devflow.planning.serena import (
     READ_ONLY_SERENA_TOOLS,
+    SerenaSpikeConfig,
+    _call_signature,
     _langchain_tools,
+    _should_continue,
     _tool_result_text,
 )
 
@@ -58,3 +61,64 @@ class SerenaResultFormattingTests(unittest.TestCase):
         )
 
         self.assertEqual(_tool_result_text(result, 100), "first\nsecond")
+
+
+class SerenaContinuationTests(unittest.TestCase):
+    def config(self):
+        return SerenaSpikeConfig(
+            repo_path="/repo",
+            output_dir="/output",
+            command="serena",
+            args=(),
+            max_rounds=3,
+            max_tool_calls_per_round=12,
+            max_total_tool_calls=24,
+            max_tool_result_chars=8000,
+            max_transcript_chars=60000,
+            model=None,
+        )
+
+    def test_continues_for_repository_gaps_with_budget(self):
+        report = {
+            "status": "needs_repository_context",
+            "missing_context": [{"kind": "repository"}],
+        }
+
+        self.assertTrue(_should_continue(
+            report,
+            round_number=1,
+            total_tool_calls=12,
+            config=self.config(),
+        ))
+
+    def test_stops_for_user_decision(self):
+        report = {
+            "status": "needs_user_decision",
+            "missing_context": [{"kind": "user_decision"}],
+        }
+
+        self.assertFalse(_should_continue(
+            report,
+            round_number=1,
+            total_tool_calls=8,
+            config=self.config(),
+        ))
+
+    def test_stops_when_total_budget_is_exhausted(self):
+        report = {
+            "status": "needs_repository_context",
+            "missing_context": [{"kind": "repository"}],
+        }
+
+        self.assertFalse(_should_continue(
+            report,
+            round_number=2,
+            total_tool_calls=24,
+            config=self.config(),
+        ))
+
+    def test_call_signature_ignores_argument_order(self):
+        first = _call_signature("find_symbol", {"name": "Plan", "depth": 1})
+        second = _call_signature("find_symbol", {"depth": 1, "name": "Plan"})
+
+        self.assertEqual(first, second)

@@ -32,13 +32,31 @@ class RelevantFile(BaseModel):
     symbols: list[str] = Field(default_factory=list)
 
 
+class MissingContextItem(BaseModel):
+    kind: Literal[
+        "repository",
+        "user_decision",
+        "tool_failure",
+        "external_information",
+    ]
+    description: str
+    suggested_action: str
+    related_files: list[str] = Field(default_factory=list)
+    related_symbols: list[str] = Field(default_factory=list)
+
+
 class SerenaContextReport(BaseModel):
-    status: Literal["sufficient", "insufficient"]
+    status: Literal[
+        "sufficient",
+        "needs_repository_context",
+        "needs_user_decision",
+        "blocked",
+    ]
     architecture_summary: str
     relevant_files: list[RelevantFile] = Field(default_factory=list)
     relevant_symbols: list[str] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list)
-    missing_context: list[str] = Field(default_factory=list)
+    missing_context: list[MissingContextItem] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -47,7 +65,9 @@ class SerenaSpikeConfig:
     output_dir: str
     command: str
     args: tuple[str, ...]
-    max_tool_calls: int
+    max_rounds: int
+    max_tool_calls_per_round: int
+    max_total_tool_calls: int
     max_tool_result_chars: int
     max_transcript_chars: int
     model: Any
@@ -74,7 +94,18 @@ def load_serena_spike_config(planning: PlanningConfig) -> SerenaSpikeConfig:
         output_dir=str(output_dir),
         command=settings.get("command", "serena"),
         args=tuple(str(item).replace("{repo}", planning.repo_path) for item in args),
-        max_tool_calls=max(1, min(30, int(settings.get("max_tool_calls", 12)))),
+        max_rounds=max(1, min(5, int(settings.get("max_rounds", 3)))),
+        max_tool_calls_per_round=max(
+            1,
+            min(30, int(settings.get(
+                "max_tool_calls_per_round",
+                settings.get("max_tool_calls", 12),
+            ))),
+        ),
+        max_total_tool_calls=max(
+            1,
+            min(60, int(settings.get("max_total_tool_calls", 24))),
+        ),
         max_tool_result_chars=max(
             500,
             int(settings.get("max_tool_result_chars", 8_000)),
@@ -124,9 +155,138 @@ def _tool_result_text(result, max_chars: int) -> str:
     return text[:max_chars]
 
 
-async def _explore_with_session(request: str, config: SerenaSpikeConfig, session):
+def _call_signature(name: str, arguments: dict[str, Any]) -> str:
+    return json.dumps([name, arguments], sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _should_continue(
+    report: dict[str, Any],
+    *,
+    round_number: int,
+    total_tool_calls: int,
+    config: SerenaSpikeConfig,
+) -> bool:
+    kinds = {item["kind"] for item in report["missing_context"]}
+    return (
+        "repository" in kinds
+        and "tool_failure" not in kinds
+        and round_number < config.max_rounds
+        and total_tool_calls < config.max_total_tool_calls
+    )
+
+
+async def _explore_round(
+    request: str,
+    config: SerenaSpikeConfig,
+    session,
+    model,
+    tools: list[dict[str, Any]],
+    *,
+    round_number: int,
+    prior_report: dict[str, Any] | None,
+    executed_signatures: set[str],
+    tool_call_budget: int,
+):
     try:
         from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+    except ImportError as error:
+        raise ValueError("LangChain is required; reinstall devflow") from error
+    explorer = model.bind_tools(tools)
+    prior_text = json.dumps(prior_report, ensure_ascii=False) if prior_report else "None"
+    messages = [
+        SystemMessage(content=(
+            "You are exploring a code repository to identify context for an implementation plan. "
+            "Use Serena's semantic retrieval tools. Do not propose edits and do not claim a path, "
+            "symbol, or relationship unless a tool result supports it. Start broad, then follow "
+            "definitions and references. Before stopping with repository context missing, attempt "
+            "to locate each named symbol and inspect known relevant files. Distinguish information "
+            "that is unavailable from information that has not yet been investigated. Avoid "
+            "repeating completed calls from earlier rounds."
+        )),
+        HumanMessage(content=(
+            f"Development request:\n{request}\n\n"
+            f"Exploration round: {round_number}\n"
+            f"Prior grounded report:\n{prior_text}\n\n"
+            "Focus this round on repository-answerable gaps from the prior report. Preserve genuine "
+            "requirement ambiguities as user decisions rather than trying to invent an answer."
+        )),
+    ]
+    events: list[dict[str, Any]] = []
+    calls_attempted = 0
+
+    while calls_attempted < tool_call_budget:
+        response = await explorer.ainvoke(messages)
+        messages.append(response)
+        tool_calls = response.tool_calls or []
+        if not tool_calls:
+            events.append({"assistant_summary": str(response.content)})
+            break
+        for call in tool_calls:
+            if calls_attempted >= tool_call_budget:
+                break
+            name = call["name"]
+            if name not in READ_ONLY_SERENA_TOOLS:
+                continue
+            arguments = call.get("args", {})
+            signature = _call_signature(name, arguments)
+            if signature in executed_signatures:
+                result_text = (
+                    "Devflow did not execute this exact duplicate call. Use the prior result or "
+                    "refine the arguments."
+                )
+                events.append({
+                    "round": round_number,
+                    "tool": name,
+                    "arguments": arguments,
+                    "duplicate": True,
+                    "result": result_text,
+                })
+            else:
+                executed_signatures.add(signature)
+                started_at = perf_counter()
+                result = await session.call_tool(name, arguments=arguments)
+                elapsed = round(perf_counter() - started_at, 3)
+                result_text = _tool_result_text(result, config.max_tool_result_chars)
+                events.append({
+                    "round": round_number,
+                    "tool": name,
+                    "arguments": arguments,
+                    "duplicate": False,
+                    "result": result_text,
+                    "elapsed_seconds": elapsed,
+                    "is_error": bool(
+                        getattr(result, "isError", False)
+                        or getattr(result, "is_error", False)
+                    ),
+                })
+            messages.append(ToolMessage(
+                content=result_text,
+                tool_call_id=call["id"],
+            ))
+            calls_attempted += 1
+
+    report_model = model.with_structured_output(SerenaContextReport)
+    transcript_text = json.dumps(events, ensure_ascii=False)
+    if len(transcript_text) > config.max_transcript_chars:
+        transcript_text = transcript_text[:config.max_transcript_chars]
+        transcript_text += "\n[Transcript truncated by devflow]"
+    report_prompt = (
+        "Create an accumulated grounded repository-context report for the development request. "
+        "Merge the prior report with this round, retaining useful earlier evidence. Include only "
+        "paths and symbols supported by tool results. Classify every missing item as repository, "
+        "user_decision, tool_failure, or external_information. Use needs_repository_context only "
+        "for gaps that another Serena round could answer; use needs_user_decision for genuine "
+        "requirement ambiguity; use blocked for tool failures; otherwise use sufficient.\n\n"
+        f"DEVELOPMENT REQUEST\n{request}\n\n"
+        f"PRIOR REPORT\n{prior_text}\n\n"
+        f"CURRENT ROUND TRANSCRIPT\n{transcript_text}"
+    )
+    report = await report_model.ainvoke(report_prompt)
+    return report.model_dump(), events, calls_attempted
+
+
+async def _explore_with_session(request: str, config: SerenaSpikeConfig, session):
+    try:
         from devflow.code_review.models import get_code_review_model
     except ImportError as error:
         raise ValueError("LangChain is required; reinstall devflow") from error
@@ -138,68 +298,48 @@ async def _explore_with_session(request: str, config: SerenaSpikeConfig, session
         raise ValueError("Serena exposed no permitted read-only retrieval tools")
 
     model = get_code_review_model(config.model)
-    explorer = model.bind_tools(tools)
-    messages = [
-        SystemMessage(content=(
-            "You are exploring a code repository to identify context for an implementation plan. "
-            "Use Serena's semantic retrieval tools. Do not propose edits and do not claim a path, "
-            "symbol, or relationship unless a tool result supports it. Start broad, then follow "
-            "definitions and references. Stop when you can identify the actual relevant files, "
-            "symbols, architecture, tests, and remaining unknowns."
-        )),
-        HumanMessage(content=f"Development request:\n{request}"),
-    ]
-    events: list[dict[str, Any]] = []
-    tool_calls_used = 0
+    executed_signatures: set[str] = set()
+    all_events: list[dict[str, Any]] = []
+    reports: list[dict[str, Any]] = []
+    total_tool_calls = 0
+    report: dict[str, Any] | None = None
 
-    while tool_calls_used < config.max_tool_calls:
-        response = await explorer.ainvoke(messages)
-        messages.append(response)
-        tool_calls = response.tool_calls or []
-        if not tool_calls:
-            events.append({"assistant_summary": str(response.content)})
+    for round_number in range(1, config.max_rounds + 1):
+        remaining = config.max_total_tool_calls - total_tool_calls
+        if remaining <= 0:
             break
-        for call in tool_calls:
-            if tool_calls_used >= config.max_tool_calls:
-                break
-            name = call["name"]
-            if name not in READ_ONLY_SERENA_TOOLS:
-                continue
-            arguments = call.get("args", {})
-            started_at = perf_counter()
-            result = await session.call_tool(name, arguments=arguments)
-            elapsed = round(perf_counter() - started_at, 3)
-            result_text = _tool_result_text(result, config.max_tool_result_chars)
-            events.append({
-                "tool": name,
-                "arguments": arguments,
-                "result": result_text,
-                "elapsed_seconds": elapsed,
-                "is_error": bool(
-                    getattr(result, "isError", False)
-                    or getattr(result, "is_error", False)
-                ),
-            })
-            messages.append(ToolMessage(
-                content=result_text,
-                tool_call_id=call["id"],
-            ))
-            tool_calls_used += 1
+        round_budget = min(config.max_tool_calls_per_round, remaining)
+        report, events, calls = await _explore_round(
+            request,
+            config,
+            session,
+            model,
+            tools,
+            round_number=round_number,
+            prior_report=report,
+            executed_signatures=executed_signatures,
+            tool_call_budget=round_budget,
+        )
+        total_tool_calls += calls
+        all_events.extend(events)
+        reports.append(report)
+        if not _should_continue(
+            report,
+            round_number=round_number,
+            total_tool_calls=total_tool_calls,
+            config=config,
+        ):
+            break
 
-    report_model = model.with_structured_output(SerenaContextReport)
-    transcript_text = json.dumps(events, ensure_ascii=False)
-    if len(transcript_text) > config.max_transcript_chars:
-        transcript_text = transcript_text[:config.max_transcript_chars]
-        transcript_text += "\n[Transcript truncated by devflow]"
-    report_prompt = (
-        "Create a grounded repository-context report for the development request below. "
-        "Use only the Serena exploration transcript. Include only paths and symbols explicitly "
-        "supported by tool results. Set status to sufficient or insufficient.\n\n"
-        f"DEVELOPMENT REQUEST\n{request}\n\n"
-        f"SERENA TRANSCRIPT\n{transcript_text}"
+    if report is None:
+        raise ValueError("Serena exploration ended before producing a context report")
+    return (
+        report,
+        all_events,
+        reports,
+        [tool["function"]["name"] for tool in tools],
+        total_tool_calls,
     )
-    report = await report_model.ainvoke(report_prompt)
-    return report.model_dump(), events, [tool["function"]["name"] for tool in tools]
 
 
 async def _run_serena(request: str, config: SerenaSpikeConfig):
@@ -219,12 +359,15 @@ async def _run_serena(request: str, config: SerenaSpikeConfig):
 
 
 def run_serena_spike(request: str, config: SerenaSpikeConfig) -> dict[str, Any]:
-    report, events, available_tools = asyncio.run(_run_serena(request, config))
+    report, events, reports, available_tools, total_tool_calls = asyncio.run(
+        _run_serena(request, config)
+    )
     root = Path(config.output_dir)
     run_dir = root / "runs" / datetime.now().strftime("%Y-%m-%d_%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=False)
     report_path = run_dir / "context.json"
     transcript_path = run_dir / "serena-transcript.json"
+    rounds_path = run_dir / "round-reports.json"
     evidence_path = run_dir / "evidence.json"
     report_path.write_text(
         json.dumps(report, indent=2, ensure_ascii=False),
@@ -234,6 +377,10 @@ def run_serena_spike(request: str, config: SerenaSpikeConfig) -> dict[str, Any]:
         json.dumps(events, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    rounds_path.write_text(
+        json.dumps(reports, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
     evidence_path.write_text(
         json.dumps({
             "request": request,
@@ -241,7 +388,11 @@ def run_serena_spike(request: str, config: SerenaSpikeConfig) -> dict[str, Any]:
             "serena_command": [config.command, *config.args],
             "allowed_tools": sorted(READ_ONLY_SERENA_TOOLS),
             "available_allowed_tools": available_tools,
-            "max_tool_calls": config.max_tool_calls,
+            "max_rounds": config.max_rounds,
+            "max_tool_calls_per_round": config.max_tool_calls_per_round,
+            "max_total_tool_calls": config.max_total_tool_calls,
+            "total_tool_calls": total_tool_calls,
+            "rounds_completed": len(reports),
             "max_tool_result_chars": config.max_tool_result_chars,
             "max_transcript_chars": config.max_transcript_chars,
             "model": {
@@ -256,6 +407,7 @@ def run_serena_spike(request: str, config: SerenaSpikeConfig) -> dict[str, Any]:
         "paths": {
             "context": str(report_path.resolve()),
             "transcript": str(transcript_path.resolve()),
+            "rounds": str(rounds_path.resolve()),
             "evidence": str(evidence_path.resolve()),
         },
     }
