@@ -34,9 +34,9 @@ EvidenceText = Annotated[str, Field(max_length=500)]
 class RelevantFile(BaseModel):
     path: PathText
     role: Literal[
-        "confirmed_change_target",
+        "probable_change_target",
         "candidate_change_target",
-        "related_context",
+        "supporting_context",
     ]
     reason: str = Field(max_length=800)
     symbols: list[SymbolText] = Field(default_factory=list, max_length=20)
@@ -44,6 +44,12 @@ class RelevantFile(BaseModel):
 
 class ContextEvidence(BaseModel):
     claim: EvidenceText
+    source: EvidenceText
+
+
+class QuestionResolution(BaseModel):
+    question: str = Field(max_length=1000)
+    resolution: str = Field(max_length=1000)
     source: EvidenceText
 
 
@@ -71,6 +77,10 @@ class SerenaContextReport(BaseModel):
     relevant_files: list[RelevantFile] = Field(default_factory=list, max_length=30)
     relevant_symbols: list[SymbolText] = Field(default_factory=list, max_length=50)
     evidence: list[ContextEvidence] = Field(default_factory=list, max_length=30)
+    question_resolutions: list[QuestionResolution] = Field(
+        default_factory=list,
+        max_length=10,
+    )
     missing_context: list[MissingContextItem] = Field(
         default_factory=list,
         max_length=10,
@@ -336,13 +346,17 @@ async def _explore_round(
         "user_decision, tool_failure, or external_information. Use needs_repository_context only "
         "for gaps that another Serena round could answer; use needs_user_decision for genuine "
         "requirement ambiguity; use blocked for tool failures; otherwise use sufficient. "
-        "Classify every relevant file as confirmed_change_target, candidate_change_target, "
-        "or related_context. A confirmed change target requires repository evidence tracing "
-        "the requested behavior or data through that file; do not confirm a file merely because "
-        "its name or contents look plausible. Use candidate_change_target for plausible files "
-        "whose ownership has not been established, and related_context for files needed to "
+        "Classify every relevant file as probable_change_target, candidate_change_target, "
+        "or supporting_context. A probable change target requires repository evidence tracing "
+        "the requested behavior or data through that file; do not mark a file probable merely "
+        "because its name or contents look plausible. Use candidate_change_target for plausible "
+        "files whose ownership has not been established, and supporting_context for files needed to "
         "understand the implementation but not currently expected to change. Relevant files are "
         "research inputs, not automatic modification instructions. "
+        "When a question or ambiguity from the prior report is no longer missing, include a short "
+        "question_resolutions entry explaining the question, its grounded resolution, and the file "
+        "path or symbol that supports it. If there is no repository source for the resolution, keep "
+        "the question in missing_context rather than guessing or silently dropping it. "
         "Be concise. Do not copy source code, tool results, or the transcript into the report. "
         "Represent evidence only as short factual claims paired with file paths or symbol names. "
         "Keep the complete report comfortably below the output-token limit.\n\n"

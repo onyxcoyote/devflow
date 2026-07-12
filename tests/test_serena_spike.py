@@ -163,11 +163,16 @@ class SerenaReportSchemaTests(unittest.TestCase):
             architecture_summary="Planning is coordinated by the planning graph.",
             relevant_files=[{
                 "path": "src/devflow/planning/graph.py",
-                "role": "confirmed_change_target",
+                "role": "probable_change_target",
                 "reason": "The requested behavior is implemented by this graph.",
             }],
             evidence=[{
                 "claim": "The graph invokes the planning node.",
+                "source": "src/devflow/planning/graph.py:build_planning_graph",
+            }],
+            question_resolutions=[{
+                "question": "Which graph owns planning?",
+                "resolution": "The planning graph invokes the planning node.",
                 "source": "src/devflow/planning/graph.py:build_planning_graph",
             }],
         )
@@ -175,7 +180,11 @@ class SerenaReportSchemaTests(unittest.TestCase):
         self.assertEqual(report.evidence[0].claim, "The graph invokes the planning node.")
         self.assertEqual(
             report.relevant_files[0].role,
-            "confirmed_change_target",
+            "probable_change_target",
+        )
+        self.assertEqual(
+            report.question_resolutions[0].question,
+            "Which graph owns planning?",
         )
 
     def test_relevant_file_role_is_required(self):
@@ -186,6 +195,17 @@ class SerenaReportSchemaTests(unittest.TestCase):
                 relevant_files=[{
                     "path": "src/devflow/planning/graph.py",
                     "reason": "The graph is relevant.",
+                }],
+            )
+
+    def test_rejects_question_resolution_without_source(self):
+        with self.assertRaises(ValueError):
+            SerenaContextReport(
+                status="sufficient",
+                architecture_summary="Planning is coordinated by the planning graph.",
+                question_resolutions=[{
+                    "question": "Which graph owns planning?",
+                    "resolution": "The planning graph owns it.",
                 }],
             )
 
