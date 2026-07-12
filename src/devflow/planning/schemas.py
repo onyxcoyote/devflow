@@ -1,43 +1,47 @@
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
+ShortText = Annotated[str, Field(max_length=500)]
+DetailText = Annotated[str, Field(max_length=1500)]
+PathText = Annotated[str, Field(max_length=500)]
+
 
 class ProposedChange(BaseModel):
-    path: str
-    symbols: list[str] = Field(default_factory=list)
-    change: str
-    reason: str
-    evidence: list[str] = Field(default_factory=list)
-    dependencies: list[str] = Field(default_factory=list)
+    path: PathText
+    symbols: list[ShortText] = Field(default_factory=list, max_length=20)
+    change: DetailText
+    reason: DetailText
+    evidence: list[ShortText] = Field(default_factory=list, max_length=20)
+    dependencies: list[ShortText] = Field(default_factory=list, max_length=20)
 
 
 class OutstandingItem(BaseModel):
     kind: Literal["repository_context", "user_decision", "external_information"]
-    question: str
-    impact: str
-    suggested_action: str
+    question: DetailText
+    impact: DetailText
+    suggested_action: DetailText
 
 
 class PlanRisk(BaseModel):
-    description: str
+    description: DetailText
     likelihood: Literal["low", "medium", "high"]
     impact: Literal["low", "medium", "high"]
-    mitigation: str
-    related_files: list[str] = Field(default_factory=list)
+    mitigation: DetailText
+    related_files: list[PathText] = Field(default_factory=list, max_length=20)
 
 
 class PlanDecision(BaseModel):
-    question: str
+    question: DetailText
     status: Literal["resolved", "unresolved"]
-    decision: str = ""
-    rationale: str
+    decision: DetailText = ""
+    rationale: DetailText
     source: Literal["repository", "user", "planner"]
 
 
 class PlanRevision(BaseModel):
     based_on: str | None = None
-    changes: list[str] = Field(default_factory=list)
+    changes: list[DetailText] = Field(default_factory=list, max_length=20)
 
 
 class DevelopmentPlan(BaseModel):
@@ -45,15 +49,16 @@ class DevelopmentPlan(BaseModel):
         "ready",
         "needs_repository_context",
         "needs_user_decision",
+        "blocked",
         "not_feasible",
     ]
-    objective: str
-    design_summary: str
-    assumptions: list[str] = Field(default_factory=list)
-    proposed_changes: list[ProposedChange] = Field(default_factory=list)
-    outstanding_items: list[OutstandingItem] = Field(default_factory=list)
-    decisions: list[PlanDecision] = Field(default_factory=list)
-    acceptance_criteria: list[str] = Field(default_factory=list)
-    verification: list[str] = Field(default_factory=list)
-    risks: list[PlanRisk] = Field(default_factory=list)
+    objective: DetailText
+    design_summary: str = Field(max_length=3000)
+    assumptions: list[DetailText] = Field(default_factory=list, max_length=20)
+    proposed_changes: list[ProposedChange] = Field(default_factory=list, max_length=30)
+    outstanding_items: list[OutstandingItem] = Field(default_factory=list, max_length=15)
+    decisions: list[PlanDecision] = Field(default_factory=list, max_length=20)
+    acceptance_criteria: list[DetailText] = Field(default_factory=list, max_length=30)
+    verification: list[DetailText] = Field(default_factory=list, max_length=30)
+    risks: list[PlanRisk] = Field(default_factory=list, max_length=15)
     revision: PlanRevision = Field(default_factory=PlanRevision)

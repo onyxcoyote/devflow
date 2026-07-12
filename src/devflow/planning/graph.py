@@ -8,10 +8,13 @@ from .nodes import (
 from .state import PlanningState
 
 
-def build_planning_graph(model):
+def build_planning_graph(model, compact_retry_model, logger):
     builder = StateGraph(PlanningState)
     builder.add_node("prepare_plan_context", prepare_plan_context)
-    builder.add_node("create_plan", make_plan_node(model))
+    builder.add_node(
+        "create_plan",
+        make_plan_node(model, compact_retry_model, logger),
+    )
     builder.add_node("create_plan_report", create_plan_report)
     builder.add_edge(START, "prepare_plan_context")
     builder.add_edge("prepare_plan_context", "create_plan")

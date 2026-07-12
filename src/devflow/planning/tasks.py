@@ -22,8 +22,25 @@ def run_planning_graph(initial_state: dict[str, Any], config: PlanningConfig) ->
         config.model.model,
         config.model.base_url,
     )
-    graph = build_planning_graph(get_code_review_model(config.model))
-    return graph.invoke(initial_state)
+    logger.info(
+        "Creating planning models with output limits initial=%d compact_retry=%d",
+        config.max_output_tokens,
+        config.compact_retry_output_tokens,
+    )
+    model = get_code_review_model(
+        config.model,
+        max_output_tokens=config.max_output_tokens,
+    )
+    compact_retry_model = get_code_review_model(
+        config.model,
+        max_output_tokens=config.compact_retry_output_tokens,
+    )
+    logger.info("Building planning graph")
+    graph = build_planning_graph(model, compact_retry_model, logger)
+    logger.info("Invoking planning graph")
+    result = graph.invoke(initial_state)
+    logger.info("Planning graph completed with status=%s", result["plan"]["status"])
+    return result
 
 
 @task

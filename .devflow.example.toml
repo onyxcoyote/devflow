@@ -22,6 +22,8 @@ model_request_min_interval_seconds = 2.0
 [plan]
 output_dir = ".devflow/plans"
 save_model_exchange = false
+max_output_tokens = 8000
+compact_retry_output_tokens = 4000
 
 [commands]
 # These are trusted commands executed directly by devflow.

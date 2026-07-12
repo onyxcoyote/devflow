@@ -19,12 +19,7 @@ def prepare_plan_context(state: PlanningState) -> dict:
     }
 
 
-def make_plan_node(model):
-    structured_model = model.with_structured_output(
-        DevelopmentPlan,
-        include_raw=True,
-    )
-
+def make_plan_node(model, compact_retry_model, logger):
     def create_plan(state: PlanningState) -> dict:
         previous_plan = state["previous_plan"]
         mode_instruction = (
@@ -50,6 +45,8 @@ def make_plan_node(model):
             "evidence source. Design recommendations may be planner reasoning.\n"
             "Each proposed change must name one file and describe its responsibility. Include "
             "tests and validation in verification and acceptance criteria.\n"
+            "Be concise. Do not repeat the repository context, source code, or the same change "
+            "in multiple fields. Prefer short actionable statements.\n"
             "Use needs_repository_context when a specific repository question prevents a "
             "responsible plan, needs_user_decision when a material product or architecture choice "
             "remains, not_feasible when the requested outcome cannot responsibly be planned, and "
@@ -59,49 +56,115 @@ def make_plan_node(model):
             f"REPOSITORY CONTEXT\n==================\n{state['context_text']}\n\n"
             f"PREVIOUS PLAN\n=============\n{previous_text}"
         )
-
-        started_at = perf_counter()
-        result = structured_model.invoke(prompt)
-        elapsed_seconds = perf_counter() - started_at
-        raw_response = result["raw"]
-        parsed_plan = result["parsed"]
-        parsing_error = result["parsing_error"]
-        plan_metadata = _model_result_metadata(
-            raw_response,
-            parsing_error,
-            elapsed_seconds,
-        )
-        model_result = {**state["model_result"], "plan": plan_metadata}
+        prompts = [
+            prompt,
+            (
+                "The previous planning response was truncated, invalid, or failed. Return an "
+                "especially compact plan. Include only actionable file changes, blockers, key "
+                "decisions, acceptance criteria, verification, and material risks. Do not repeat "
+                "context or explanatory prose.\n\n" + prompt
+            ),
+        ]
+        models = [model, compact_retry_model]
+        attempt_metadata = []
         model_exchange = dict(state["model_exchange"])
-        if state["save_model_exchange"]:
-            model_exchange["plan"] = {
-                "request": {"prompt": prompt},
-                "response": _raw_response_data(raw_response),
-            }
+        exchange_attempts = []
+        plan = None
+        failure_details = []
 
-        response_truncated = plan_metadata["finish_reason"] in {
-            "length",
-            "max_tokens",
-        }
-        if response_truncated or parsing_error is not None or parsed_plan is None:
-            detail = (
-                "The model response reached its output-token limit."
-                if response_truncated
-                else plan_metadata["parsing_error"] or "No parsed plan was returned."
+        for attempt, (attempt_model, attempt_prompt) in enumerate(
+            zip(models, prompts),
+            start=1,
+        ):
+            started_at = perf_counter()
+            logger.info(
+                "Preparing structured planning model for attempt %d (%s)",
+                attempt,
+                "initial" if attempt == 1 else "compact retry",
             )
+            try:
+                structured_model = attempt_model.with_structured_output(
+                    DevelopmentPlan,
+                    include_raw=True,
+                )
+                logger.info(
+                    "Invoking planning model attempt %d; context_chars=%d previous_plan=%s",
+                    attempt,
+                    len(state["context_text"]),
+                    previous_plan is not None,
+                )
+                result = structured_model.invoke(attempt_prompt)
+                elapsed_seconds = perf_counter() - started_at
+                raw_response = result["raw"]
+                parsed_plan = result["parsed"]
+                parsing_error = result["parsing_error"]
+                metadata = _model_result_metadata(
+                    raw_response,
+                    parsing_error,
+                    elapsed_seconds,
+                )
+                attempt_metadata.append(metadata)
+                if state["save_model_exchange"]:
+                    exchange_attempts.append({
+                        "request": {"prompt": attempt_prompt},
+                        "response": _raw_response_data(raw_response),
+                    })
+                truncated = metadata["finish_reason"] in {"length", "max_tokens"}
+                logger.info(
+                    "Planning attempt %d completed in %.1fs: finish_reason=%s total_tokens=%s parsed=%s",
+                    attempt,
+                    elapsed_seconds,
+                    metadata["finish_reason"],
+                    metadata.get("total_tokens") or "unknown",
+                    parsed_plan is not None and parsing_error is None,
+                )
+                if not truncated and parsing_error is None and parsed_plan is not None:
+                    plan = parsed_plan.model_dump()
+                    break
+                failure_details.append(
+                    "output limit reached" if truncated else (
+                        metadata["parsing_error"] or "no parsed plan returned"
+                    )
+                )
+            except Exception as error:
+                elapsed_seconds = perf_counter() - started_at
+                failure = {
+                    "attempt": attempt,
+                    "elapsed_seconds": round(elapsed_seconds, 3),
+                    "exception_type": type(error).__name__,
+                    "exception_message": str(error)[:2000],
+                }
+                attempt_metadata.append(failure)
+                failure_details.append(
+                    f"{type(error).__name__}: {str(error)[:500]}"
+                )
+                logger.warning(
+                    "Planning attempt %d failed after %.1fs: %s",
+                    attempt,
+                    elapsed_seconds,
+                    failure_details[-1],
+                )
+
+        model_result = {
+            **state["model_result"],
+            "plan": attempt_metadata[-1],
+            "plan_attempts": attempt_metadata,
+        }
+        if state["save_model_exchange"]:
+            model_exchange["plan_attempts"] = exchange_attempts
+        if plan is None:
+            logger.error("Planning failed after two bounded attempts")
             plan = DevelopmentPlan(
-                status="needs_repository_context",
+                status="blocked",
                 objective=state["request"],
-                design_summary="The model response could not be parsed into a plan.",
+                design_summary="The planning model did not return a valid bounded plan.",
                 outstanding_items=[{
-                    "kind": "repository_context",
-                    "question": detail,
-                    "impact": "No reliable structured plan was produced.",
-                    "suggested_action": "Inspect the model result and retry planning.",
+                    "kind": "external_information",
+                    "question": "; ".join(failure_details)[:1500],
+                    "impact": "No reliable structured implementation plan was produced.",
+                    "suggested_action": "Inspect plan_attempts in evidence.json and retry with a different model or limits.",
                 }],
             ).model_dump()
-        else:
-            plan = parsed_plan.model_dump()
         if previous_plan is not None:
             plan["revision"]["based_on"] = state["context_source"].get(
                 "previous_plan_path"

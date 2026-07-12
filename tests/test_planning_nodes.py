@@ -5,6 +5,17 @@ from devflow.planning.nodes import create_plan_report, make_plan_node
 from devflow.planning.schemas import DevelopmentPlan
 
 
+class FakeLogger:
+    def info(self, *args):
+        pass
+
+    def warning(self, *args):
+        pass
+
+    def error(self, *args):
+        pass
+
+
 class FakeStructuredModel:
     def __init__(self, result):
         self.result = result
@@ -79,11 +90,12 @@ class CreatePlanTests(unittest.TestCase):
             acceptance_criteria=["A plan is saved."],
             verification=["Run tests."],
         )
-        node = make_plan_node(FakeModel({
+        model = FakeModel({
             "raw": self.raw_response(),
             "parsed": parsed_plan,
             "parsing_error": None,
-        }))
+        })
+        node = make_plan_node(model, model, FakeLogger())
         result = node(state())
 
         self.assertEqual(result["plan"]["status"], "ready")
@@ -96,26 +108,29 @@ class CreatePlanTests(unittest.TestCase):
             design_summary="Revise the prior plan.",
             revision={"changes": ["Added validation."]},
         )
-        node = make_plan_node(FakeModel({
+        model = FakeModel({
             "raw": self.raw_response(),
             "parsed": parsed_plan,
             "parsing_error": None,
-        }))
+        })
+        node = make_plan_node(model, model, FakeLogger())
         result = node(state(previous_plan={"status": "ready"}))
 
         self.assertEqual(result["plan"]["revision"]["based_on"], "/plans/old.json")
         self.assertEqual(result["plan"]["revision"]["changes"], ["Added validation."])
 
-    def test_truncated_response_returns_repository_context_status(self):
-        node = make_plan_node(FakeModel({
+    def test_two_truncated_responses_return_blocked_status(self):
+        model = FakeModel({
             "raw": self.raw_response("length"),
             "parsed": None,
             "parsing_error": ValueError("incomplete"),
-        }))
+        })
+        node = make_plan_node(model, model, FakeLogger())
         result = node(state())
 
-        self.assertEqual(result["plan"]["status"], "needs_repository_context")
+        self.assertEqual(result["plan"]["status"], "blocked")
         self.assertIn(
-            "output-token limit",
+            "output limit reached",
             result["plan"]["outstanding_items"][0]["question"],
         )
+        self.assertEqual(len(result["model_result"]["plan_attempts"]), 2)

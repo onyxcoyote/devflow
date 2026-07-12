@@ -11,6 +11,8 @@ class PlanningConfig:
     repo_path: str
     output_dir: str
     save_model_exchange: bool
+    max_output_tokens: int
+    compact_retry_output_tokens: int
     model: ModelConfig
     config_sources: tuple[str, ...]
 
@@ -39,6 +41,14 @@ def load_planning_config(
         repo_path=shared.repo_path,
         output_dir=str(output_dir),
         save_model_exchange=bool(settings.get("save_model_exchange", False)),
+        max_output_tokens=max(
+            1000,
+            min(20_000, int(settings.get("max_output_tokens", 8_000))),
+        ),
+        compact_retry_output_tokens=max(
+            500,
+            min(10_000, int(settings.get("compact_retry_output_tokens", 4_000))),
+        ),
         model=shared.model,
         config_sources=shared.config_sources,
     )

@@ -57,6 +57,8 @@ Development planning uses a separate section:
 [plan]
 output_dir = ".devflow/plans"
 save_model_exchange = false
+max_output_tokens = 8000
+compact_retry_output_tokens = 4000
 ```
 
 Run a read-only plan with:

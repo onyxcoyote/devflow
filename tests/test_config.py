@@ -43,6 +43,8 @@ output_dir = "serena-output"
             self.assertEqual(serena.config_sources, review.config_sources)
             self.assertEqual(review.output_dir, str(repo / "review-output"))
             self.assertEqual(plan.output_dir, str(repo / "plan-output"))
+            self.assertEqual(plan.max_output_tokens, 8000)
+            self.assertEqual(plan.compact_retry_output_tokens, 4000)
             self.assertEqual(serena.output_dir, str(repo / "serena-output"))
 
     def test_serena_uses_context_output_default(self):
