@@ -8,7 +8,7 @@ max_command_output_chars = 12000
 save_model_exchange = false
 
 [serena]
-output_dir = ".devflow/serena-spikes"
+output_dir = ".devflow/serena-context"
 command = "serena"
 args = ["start-mcp-server", "--context", "ide", "--project", "{repo}"]
 max_rounds = 3

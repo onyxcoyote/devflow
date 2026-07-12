@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import tomllib
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
@@ -11,7 +9,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
-from .config import PlanningConfig
+from .config import SerenaContextConfig
 
 READ_ONLY_SERENA_TOOLS = {
     "find_declaration",
@@ -87,75 +85,6 @@ class SerenaContextReport(BaseModel):
     )
 
 
-@dataclass(frozen=True)
-class SerenaSpikeConfig:
-    repo_path: str
-    output_dir: str
-    command: str
-    args: tuple[str, ...]
-    max_rounds: int
-    max_tool_calls_per_round: int
-    max_total_tool_calls: int
-    max_tool_result_chars: int
-    max_transcript_chars: int
-    max_report_output_tokens: int
-    model_request_min_interval_seconds: float
-    model: Any
-
-
-def load_serena_spike_config(planning: PlanningConfig) -> SerenaSpikeConfig:
-    settings: dict[str, Any] = {}
-    for source in planning.config_sources:
-        with Path(source).open("rb") as file:
-            settings.update(tomllib.load(file).get("serena", {}))
-
-    output_dir = Path(settings.get("output_dir", ".devflow/serena-spikes"))
-    if not output_dir.is_absolute():
-        output_dir = Path(planning.repo_path) / output_dir
-    args = settings.get("args", [
-        "start-mcp-server",
-        "--context",
-        "ide",
-        "--project",
-        "{repo}",
-    ])
-    return SerenaSpikeConfig(
-        repo_path=planning.repo_path,
-        output_dir=str(output_dir),
-        command=settings.get("command", "serena"),
-        args=tuple(str(item).replace("{repo}", planning.repo_path) for item in args),
-        max_rounds=max(1, min(5, int(settings.get("max_rounds", 3)))),
-        max_tool_calls_per_round=max(
-            1,
-            min(30, int(settings.get(
-                "max_tool_calls_per_round",
-                settings.get("max_tool_calls", 12),
-            ))),
-        ),
-        max_total_tool_calls=max(
-            1,
-            min(60, int(settings.get("max_total_tool_calls", 36))),
-        ),
-        max_tool_result_chars=max(
-            500,
-            int(settings.get("max_tool_result_chars", 8_000)),
-        ),
-        max_transcript_chars=max(
-            5_000,
-            int(settings.get("max_transcript_chars", 60_000)),
-        ),
-        max_report_output_tokens=max(
-            500,
-            min(10_000, int(settings.get("max_report_output_tokens", 5_000))),
-        ),
-        model_request_min_interval_seconds=max(
-            0.0,
-            float(settings.get("model_request_min_interval_seconds", 2.0)),
-        ),
-        model=planning.model,
-    )
-
-
 class _ModelRequestLimiter:
     def __init__(self, minimum_interval_seconds: float):
         self.minimum_interval_seconds = minimum_interval_seconds
@@ -225,7 +154,7 @@ def _should_continue(
     *,
     round_number: int,
     total_tool_calls: int,
-    config: SerenaSpikeConfig,
+    config: SerenaContextConfig,
 ) -> bool:
     kinds = {item["kind"] for item in report["missing_context"]}
     return (
@@ -273,7 +202,7 @@ def _bounded_transcript(
 
 async def _explore_round(
     request: str,
-    config: SerenaSpikeConfig,
+    config: SerenaContextConfig,
     session,
     model,
     report_model,
@@ -434,7 +363,7 @@ async def _explore_round(
     return blocked_report.model_dump(), events, calls_attempted, attempt_errors
 
 
-async def _explore_with_session(request: str, config: SerenaSpikeConfig, session):
+async def _explore_with_session(request: str, config: SerenaContextConfig, session):
     try:
         from devflow.code_review.models import get_code_review_model
     except ImportError as error:
@@ -515,7 +444,7 @@ async def _explore_with_session(request: str, config: SerenaSpikeConfig, session
 
 async def _run_serena(
     request: str,
-    config: SerenaSpikeConfig,
+    config: SerenaContextConfig,
     stderr_log,
 ):
     try:
@@ -533,7 +462,7 @@ async def _run_serena(
             return await _explore_with_session(request, config, session)
 
 
-def run_serena_spike(request: str, config: SerenaSpikeConfig) -> dict[str, Any]:
+def run_serena_context(request: str, config: SerenaContextConfig) -> dict[str, Any]:
     root = Path(config.output_dir)
     run_dir = root / "runs" / datetime.now().strftime("%Y-%m-%d_%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=False)

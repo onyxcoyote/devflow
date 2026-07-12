@@ -10,7 +10,33 @@ from .code_review.config import load_code_review_config
 from .code_review.flow import code_review_flow
 from .planning.config import load_planning_config
 from .planning.flow import planning_flow
-from .planning.serena import load_serena_spike_config, run_serena_spike
+from .repository_context.config import load_serena_context_config
+from .repository_context.flow import serena_context_flow
+
+
+def _add_common_config_arguments(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--repo",
+        default=".",
+        help="Target repository; defaults to the current directory.",
+    )
+    command.add_argument(
+        "--config",
+        help="Repository configuration path; defaults to <repo>/.devflow.toml.",
+    )
+    command.add_argument(
+        "--global-config",
+        help="Global configuration path; defaults to ~/.config/devflow/config.toml.",
+    )
+    command.add_argument(
+        "--provider",
+        choices=("ollama", "openrouter"),
+        help="Override the configured model provider for this run.",
+    )
+    command.add_argument(
+        "--model",
+        help="Override the configured model name for this run.",
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -21,28 +47,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "review",
         help="Run a read-only AI review of the current Git diff.",
     )
-    review.add_argument(
-        "--repo",
-        default=".",
-        help="Repository to review; defaults to the current directory.",
-    )
-    review.add_argument(
-        "--config",
-        help="Repository configuration path; defaults to <repo>/.devflow.toml.",
-    )
-    review.add_argument(
-        "--global-config",
-        help="Global configuration path; defaults to ~/.config/devflow/config.toml.",
-    )
-    review.add_argument(
-        "--provider",
-        choices=("ollama", "openrouter"),
-        help="Override the configured model provider for this run.",
-    )
-    review.add_argument(
-        "--model",
-        help="Override the configured model name for this run.",
-    )
+    _add_common_config_arguments(review)
     review.add_argument(
         "--open",
         action="store_true",
@@ -54,11 +59,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Create a read-only implementation plan for a development request.",
     )
     plan.add_argument("request", help="Development outcome to plan.")
-    plan.add_argument("--repo", default=".", help="Repository to plan against.")
-    plan.add_argument("--config", help="Repository configuration path.")
-    plan.add_argument("--global-config", help="Global configuration path.")
-    plan.add_argument("--provider", choices=("ollama", "openrouter"))
-    plan.add_argument("--model", help="Override the configured model name.")
+    _add_common_config_arguments(plan)
     plan.add_argument(
         "--open",
         action="store_true",
@@ -67,14 +68,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     serena = subparsers.add_parser(
         "serena-context",
-        help="Run an experimental read-only Serena context-discovery spike.",
+        help="Discover grounded repository context with Serena.",
     )
     serena.add_argument("request", help="Development outcome to investigate.")
-    serena.add_argument("--repo", default=".")
-    serena.add_argument("--config")
-    serena.add_argument("--global-config")
-    serena.add_argument("--provider", choices=("ollama", "openrouter"))
-    serena.add_argument("--model")
+    _add_common_config_arguments(serena)
     return parser
 
 
@@ -165,16 +162,15 @@ def _run_plan(args: argparse.Namespace) -> int:
 
 
 def _run_serena_context(args: argparse.Namespace) -> int:
-    planning = load_planning_config(
+    config = load_serena_context_config(
         args.repo,
         args.config,
         global_config_path=args.global_config,
         provider_override=args.provider,
         model_override=args.model,
     )
-    config = load_serena_spike_config(planning)
-    _print_resolved_config(planning)
-    result = run_serena_spike(args.request, config)
+    _print_resolved_config(config)
+    result = serena_context_flow(args.request, config)
     report = result["report"]
     print()
     print(f"SERENA CONTEXT: {report['status'].upper()}")

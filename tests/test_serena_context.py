@@ -2,9 +2,9 @@ import json
 import unittest
 from types import SimpleNamespace
 
-from devflow.planning.serena import (
+from devflow.repository_context.config import SerenaContextConfig
+from devflow.repository_context.serena import (
     READ_ONLY_SERENA_TOOLS,
-    SerenaSpikeConfig,
     SerenaContextReport,
     _call_signature,
     _bounded_transcript,
@@ -69,7 +69,7 @@ class SerenaResultFormattingTests(unittest.TestCase):
 
 class SerenaContinuationTests(unittest.TestCase):
     def config(self):
-        return SerenaSpikeConfig(
+        return SerenaContextConfig(
             repo_path="/repo",
             output_dir="/output",
             command="serena",
@@ -82,6 +82,7 @@ class SerenaContinuationTests(unittest.TestCase):
             max_report_output_tokens=5000,
             model_request_min_interval_seconds=2.0,
             model=None,
+            config_sources=(),
         )
 
     def test_continues_for_repository_gaps_with_budget(self):

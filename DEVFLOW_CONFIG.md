@@ -69,9 +69,9 @@ Run a read-only plan with:
 devflow plan "Describe the development outcome"
 ```
 
-## Experimental Serena context spike
+## Serena repository context
 
-Install and initialize Serena before using the spike:
+Install and initialize Serena before using repository-context discovery:
 
 ```bash
 uv tool install -p 3.13 serena-agent
@@ -82,7 +82,7 @@ Configure the read-only context-discovery process:
 
 ```toml
 [serena]
-output_dir = ".devflow/serena-spikes"
+output_dir = ".devflow/serena-context"
 command = "serena"
 args = ["start-mcp-server", "--context", "ide", "--project", "{repo}"]
 max_rounds = 3
@@ -101,7 +101,7 @@ planning context:
 devflow serena-context "Describe the development outcome"
 ```
 
-Devflow exposes only Serena retrieval tools during this spike. Editing, shell,
+Devflow exposes only Serena retrieval tools during this workflow. Editing, shell,
 memory-writing, and project-mutation tools are not available to the model.
 Model requests are started no more frequently than the configured minimum interval.
 Serena server diagnostics are saved to `serena.log` in the run directory instead of

@@ -32,8 +32,8 @@ devflow plan - native relevant file selection (for development planning) - Not s
 devflow serena-context - relevant file selection using serena MCP
 
 
-Scripts:
-================================
+Proof-of-concept text workflow
+==============================
 
 text_review
 ------------
@@ -50,39 +50,14 @@ what it does:
 has an AI review text (for testing basic flow of Prefect, does not do anything useful)
 
 
-code_review
-------------
-how to run:
-
-cd ~/projects/devflow
-
-#variables from config files can be overridden
-OLLAMA_BASE_URL=http://YOUR_OLLAMA_IP_HERE:11434 \
-OLLAMA_MODEL=your_modelname_here \
-
-PYTHONPATH=src python scripts/run_code_review.py \
-  --repo ~/projects/REPOPATH \
-  --base upstream/master \
-  --check "echo 'CI CHECK COMMAND GOES HERE including echo'" \
-  --test "echo 'CI TEST COMMAND GOES HERE including echo'"
-
-what it does:
-
--code review 
--run some CI steps specified in check and test
--output evidence and results to: output/code-review/
-
-
 devflow serena-context
 ---------
 how to run:
 
-#todo: syntax differs slightly from "review" script
-
 cd ~/projects/devflow
 devflow serena-context \
   --provider openrouter \
-  --model co\modelname_here \
+  --model provider/model-name \
   "development goal here"
 
 
