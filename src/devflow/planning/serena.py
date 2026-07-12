@@ -33,6 +33,11 @@ EvidenceText = Annotated[str, Field(max_length=500)]
 
 class RelevantFile(BaseModel):
     path: PathText
+    role: Literal[
+        "confirmed_change_target",
+        "candidate_change_target",
+        "related_context",
+    ]
     reason: str = Field(max_length=800)
     symbols: list[SymbolText] = Field(default_factory=list, max_length=20)
 
@@ -331,6 +336,13 @@ async def _explore_round(
         "user_decision, tool_failure, or external_information. Use needs_repository_context only "
         "for gaps that another Serena round could answer; use needs_user_decision for genuine "
         "requirement ambiguity; use blocked for tool failures; otherwise use sufficient. "
+        "Classify every relevant file as confirmed_change_target, candidate_change_target, "
+        "or related_context. A confirmed change target requires repository evidence tracing "
+        "the requested behavior or data through that file; do not confirm a file merely because "
+        "its name or contents look plausible. Use candidate_change_target for plausible files "
+        "whose ownership has not been established, and related_context for files needed to "
+        "understand the implementation but not currently expected to change. Relevant files are "
+        "research inputs, not automatic modification instructions. "
         "Be concise. Do not copy source code, tool results, or the transcript into the report. "
         "Represent evidence only as short factual claims paired with file paths or symbol names. "
         "Keep the complete report comfortably below the output-token limit.\n\n"

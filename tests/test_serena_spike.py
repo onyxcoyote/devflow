@@ -161,6 +161,11 @@ class SerenaReportSchemaTests(unittest.TestCase):
         report = SerenaContextReport(
             status="sufficient",
             architecture_summary="Planning is coordinated by the planning graph.",
+            relevant_files=[{
+                "path": "src/devflow/planning/graph.py",
+                "role": "confirmed_change_target",
+                "reason": "The requested behavior is implemented by this graph.",
+            }],
             evidence=[{
                 "claim": "The graph invokes the planning node.",
                 "source": "src/devflow/planning/graph.py:build_planning_graph",
@@ -168,6 +173,33 @@ class SerenaReportSchemaTests(unittest.TestCase):
         )
 
         self.assertEqual(report.evidence[0].claim, "The graph invokes the planning node.")
+        self.assertEqual(
+            report.relevant_files[0].role,
+            "confirmed_change_target",
+        )
+
+    def test_relevant_file_role_is_required(self):
+        with self.assertRaises(ValueError):
+            SerenaContextReport(
+                status="sufficient",
+                architecture_summary="Planning is coordinated by the planning graph.",
+                relevant_files=[{
+                    "path": "src/devflow/planning/graph.py",
+                    "reason": "The graph is relevant.",
+                }],
+            )
+
+    def test_rejects_unknown_relevant_file_role(self):
+        with self.assertRaises(ValueError):
+            SerenaContextReport(
+                status="sufficient",
+                architecture_summary="Planning is coordinated by the planning graph.",
+                relevant_files=[{
+                    "path": "src/devflow/planning/graph.py",
+                    "role": "maybe",
+                    "reason": "The graph might be relevant.",
+                }],
+            )
 
     def test_rejects_oversized_architecture_summary(self):
         with self.assertRaises(ValueError):
