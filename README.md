@@ -31,35 +31,42 @@ devflow review - code review (and some relevant CI tasks like running tests)
 devflow plan - Serena-backed structured implementation planning and plan refinement
 devflow serena-context - relevant file selection using serena MCP
 
+# Run Serena, then create a plan
+devflow plan "request"
 
-Proof-of-concept text workflow
+# Reuse Serena context
+devflow plan --context /path/to/context.json "request"
+
+# Run Serena with the previous plan, then refine it
+devflow plan --from-plan /path/to/plan.json "request"
+
+# Reuse context and refine a plan
+devflow plan \
+  --context /path/to/context.json \
+  --from-plan /path/to/plan.json \
+  "request"
+
+#example with specified model
+devflow plan \
+  --context /path/to/context.json \
+  --from-plan /path/to/plan.json \
+  --provider openrouter \
+  --model provider/model-name \
+  "request"
+  
+  
+  
+Proof-of-concept text review
 ==============================
-
-text_review
-------------
-how to run:
-
+#how to run:
 cd ~/projects/devflow
 OLLAMA_BASE_URL=http://YOUR_OLLAMA_IP_HERE:11434 \
 OLLAMA_MODEL=your_modelname_here \
 PYTHONPATH=src python scripts/run_text_review.py
 
 
-what it does:
-
+#what it does
 has an AI review text (for testing basic flow of Prefect, does not do anything useful)
-
-
-devflow serena-context
----------
-how to run:
-
-cd ~/projects/devflow
-devflow serena-context \
-  --provider openrouter \
-  --model provider/model-name \
-  "development goal here"
-
 
 
 develop workflow
