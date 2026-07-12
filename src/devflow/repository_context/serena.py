@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +24,8 @@ READ_ONLY_SERENA_TOOLS = {
     "read_file",
     "search_for_pattern",
 }
+
+GENERATED_ARTIFACT_PATH = re.compile(r"(^|[\\/])\.devflow([\\/]|$)")
 
 
 PathText = Annotated[str, Field(max_length=500)]
@@ -130,19 +133,64 @@ def _langchain_tools(mcp_tools) -> list[dict[str, Any]]:
     return tools
 
 
+def _references_generated_artifacts(value: Any) -> bool:
+    if isinstance(value, str):
+        return GENERATED_ARTIFACT_PATH.search(value) is not None
+    if isinstance(value, dict):
+        return any(
+            _references_generated_artifacts(key)
+            or _references_generated_artifacts(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_references_generated_artifacts(item) for item in value)
+    return False
+
+
+def _is_generated_artifact_string(value: Any) -> bool:
+    return isinstance(value, str) and _references_generated_artifacts(value)
+
+
+def _without_generated_artifacts(value: Any) -> Any:
+    if isinstance(value, str):
+        kept_lines = [
+            line for line in value.splitlines()
+            if not _references_generated_artifacts(line)
+        ]
+        return "\n".join(kept_lines)
+    if isinstance(value, list):
+        return [
+            _without_generated_artifacts(item)
+            for item in value
+            if not _is_generated_artifact_string(item)
+        ]
+    if isinstance(value, dict):
+        return {
+            key: _without_generated_artifacts(item)
+            for key, item in value.items()
+            if not _is_generated_artifact_string(key)
+            and not _is_generated_artifact_string(item)
+        }
+    return value
+
+
 def _tool_result_text(result, max_chars: int) -> str:
     structured = (
         getattr(result, "structuredContent", None)
         or getattr(result, "structured_content", None)
     )
     if structured is not None:
-        text = json.dumps(structured, ensure_ascii=False, default=str)
+        text = json.dumps(
+            _without_generated_artifacts(structured),
+            ensure_ascii=False,
+            default=str,
+        )
     else:
         blocks = []
         for block in getattr(result, "content", []):
             block_text = getattr(block, "text", None)
             blocks.append(block_text if block_text is not None else str(block))
-        text = "\n".join(blocks)
+        text = _without_generated_artifacts("\n".join(blocks))
     return text[:max_chars]
 
 
@@ -231,6 +279,8 @@ async def _explore_round(
             "to locate each named symbol and inspect known relevant files. Distinguish information "
             "that is unavailable from information that has not yet been investigated. Avoid "
             "repeating completed calls from earlier rounds."
+            " Treat .devflow as generated workflow output: never search, inspect, cite, or use "
+            "files beneath it as repository evidence."
         )),
         HumanMessage(content=(
             f"Development request:\n{request}\n\n"
@@ -256,6 +306,24 @@ async def _explore_round(
             if name not in READ_ONLY_SERENA_TOOLS:
                 continue
             arguments = call.get("args", {})
+            if _references_generated_artifacts(arguments):
+                result_text = (
+                    "Devflow did not execute this call because .devflow contains generated "
+                    "workflow artifacts, not repository source."
+                )
+                events.append({
+                    "round": round_number,
+                    "tool": name,
+                    "arguments": arguments,
+                    "blocked_generated_artifact": True,
+                    "result": result_text,
+                })
+                messages.append(ToolMessage(
+                    content=result_text,
+                    tool_call_id=call["id"],
+                ))
+                calls_attempted += 1
+                continue
             signature = _call_signature(name, arguments)
             if signature in executed_signatures:
                 result_text = (

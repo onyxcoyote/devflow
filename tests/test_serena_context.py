@@ -13,6 +13,7 @@ from devflow.repository_context.serena import (
     _should_continue,
     _tool_result_text,
     _ModelRequestLimiter,
+    _references_generated_artifacts,
 )
 
 
@@ -43,6 +44,14 @@ class SerenaToolFilteringTests(unittest.TestCase):
         self.assertNotIn("execute_shell_command", READ_ONLY_SERENA_TOOLS)
         self.assertNotIn("replace_symbol_body", READ_ONLY_SERENA_TOOLS)
 
+    def test_identifies_generated_artifact_tool_arguments(self):
+        self.assertTrue(_references_generated_artifacts({
+            "relative_path": ".devflow/serena-context/b/context.json",
+        }))
+        self.assertFalse(_references_generated_artifacts({
+            "relative_path": "src/devflow/cli.py",
+        }))
+
 
 class SerenaResultFormattingTests(unittest.TestCase):
     def test_prefers_structured_content_and_truncates(self):
@@ -65,6 +74,22 @@ class SerenaResultFormattingTests(unittest.TestCase):
         )
 
         self.assertEqual(_tool_result_text(result, 100), "first\nsecond")
+
+    def test_removes_generated_artifact_results(self):
+        result = SimpleNamespace(
+            structuredContent={
+                "files": [
+                    "src/devflow/cli.py",
+                    ".devflow/serena-context/b/context.json",
+                ]
+            },
+            content=[],
+        )
+
+        text = _tool_result_text(result, 1000)
+
+        self.assertIn("src/devflow/cli.py", text)
+        self.assertNotIn(".devflow", text)
 
 
 class SerenaContinuationTests(unittest.TestCase):
