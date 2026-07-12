@@ -28,7 +28,7 @@ source .venv/bin/activate
 Script List:
 ===========
 devflow review - code review (and some relevant CI tasks like running tests)
-devflow plan - native relevant file selection (for development planning) - Not so useful except maybe using really small repos
+devflow plan - Serena-backed structured implementation planning and plan refinement
 devflow serena-context - relevant file selection using serena MCP
 
 

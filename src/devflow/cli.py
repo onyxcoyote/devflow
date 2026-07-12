@@ -61,6 +61,14 @@ def _build_parser() -> argparse.ArgumentParser:
     plan.add_argument("request", help="Development outcome to plan.")
     _add_common_config_arguments(plan)
     plan.add_argument(
+        "--context",
+        help="Reuse an existing Serena context.json instead of running discovery.",
+    )
+    plan.add_argument(
+        "--from-plan",
+        help="Revise an existing plan.json rather than creating a plan from scratch.",
+    )
+    plan.add_argument(
         "--open",
         action="store_true",
         dest="open_report",
@@ -149,8 +157,21 @@ def _run_plan(args: argparse.Namespace) -> int:
         provider_override=args.provider,
         model_override=args.model,
     )
+    serena_config = load_serena_context_config(
+        args.repo,
+        args.config,
+        global_config_path=args.global_config,
+        provider_override=args.provider,
+        model_override=args.model,
+    )
     _print_resolved_config(config)
-    result = planning_flow(args.request, config)
+    result = planning_flow(
+        args.request,
+        config,
+        serena_config,
+        context_path=args.context,
+        previous_plan_path=args.from_plan,
+    )
     plan = result["plan"]
     print()
     print(f"DEVELOPMENT PLAN: {plan['status'].upper()}")

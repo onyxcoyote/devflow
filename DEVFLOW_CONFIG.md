@@ -56,10 +56,6 @@ Development planning uses a separate section:
 ```toml
 [plan]
 output_dir = ".devflow/plans"
-max_context_chars = 30000
-max_requested_files = 8
-max_searches = 6
-max_search_results_chars = 12000
 save_model_exchange = false
 ```
 
@@ -68,6 +64,19 @@ Run a read-only plan with:
 ```bash
 devflow plan "Describe the development outcome"
 ```
+
+By default, planning runs Serena context discovery first. Reuse an existing context
+or revise a prior structured plan with:
+
+```bash
+devflow plan --context /path/to/context.json "Describe the development outcome"
+devflow plan --from-plan /path/to/plan.json "Describe the development outcome"
+devflow plan --context /path/to/context.json --from-plan /path/to/plan.json \
+  "Describe the development outcome"
+```
+
+Reused context must belong to the same repository and current commit. Its sibling
+`evidence.json` supplies the repository identity.
 
 ## Serena repository context
 
@@ -94,8 +103,7 @@ max_report_output_tokens = 5000
 model_request_min_interval_seconds = 2.0
 ```
 
-Then compare Serena's grounded context report and transcript with the native
-planning context:
+Run Serena context discovery independently with:
 
 ```bash
 devflow serena-context "Describe the development outcome"

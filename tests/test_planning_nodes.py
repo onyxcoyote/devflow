@@ -1,12 +1,8 @@
 import unittest
 from types import SimpleNamespace
 
-from devflow.planning.nodes import (
-    create_plan_report,
-    make_context_request_node,
-    make_plan_node,
-)
-from devflow.planning.schemas import DevelopmentPlan, PlanningContextRequest
+from devflow.planning.nodes import create_plan_report, make_plan_node
+from devflow.planning.schemas import DevelopmentPlan
 
 
 class FakeStructuredModel:
@@ -14,6 +10,7 @@ class FakeStructuredModel:
         self.result = result
 
     def invoke(self, prompt):
+        self.prompt = prompt
         return self.result
 
 
@@ -23,33 +20,41 @@ class FakeModel:
 
     def with_structured_output(self, schema, include_raw=False):
         self.schema = schema
-        self.include_raw = include_raw
         return FakeStructuredModel(self.result)
+
+
+def state(previous_plan=None):
+    return {
+        "request": "Add planning.",
+        "context_text": "{}",
+        "context_source": {"previous_plan_path": "/plans/old.json"},
+        "previous_plan": previous_plan,
+        "save_model_exchange": False,
+        "model_result": {},
+        "model_exchange": {},
+    }
 
 
 class CreatePlanReportTests(unittest.TestCase):
     def test_renders_structured_plan(self):
-        state = {
+        plan = DevelopmentPlan(
+            status="ready",
+            objective="Add a planning command.",
+            design_summary="Create plans without editing files.",
+            proposed_changes=[{
+                "path": "src/devflow/cli.py",
+                "symbols": ["_run_plan"],
+                "change": "Add the plan command.",
+                "reason": "Expose planning to users.",
+                "evidence": ["src/devflow/cli.py:_run_plan"],
+            }],
+            acceptance_criteria=["The command produces plan.md."],
+            verification=["Run unit tests."],
+        ).model_dump()
+        report = create_plan_report({
             "model_info": {"model": "test-model", "provider": "ollama"},
-            "plan": {
-                "status": "ready",
-                "objective": "Add a planning command.",
-                "understanding": "Create plans without editing files.",
-                "proposed_changes": [{
-                    "area": "CLI",
-                    "description": "Add the plan command.",
-                    "likely_files": ["src/devflow/cli.py"],
-                    "reason": "Expose planning to users.",
-                }],
-                "acceptance_criteria": ["The command produces plan.md."],
-                "verification": ["Run unit tests."],
-                "assumptions": [],
-                "uncertainties": [],
-                "risks": [],
-            },
-        }
-
-        report = create_plan_report(state)["report"]
+            "plan": plan,
+        })["report"]
 
         self.assertIn("**Status:** `ready`", report)
         self.assertIn("src/devflow/cli.py", report)
@@ -57,99 +62,60 @@ class CreatePlanReportTests(unittest.TestCase):
 
 
 class CreatePlanTests(unittest.TestCase):
-    def test_returns_structured_plan_and_model_metadata(self):
-        parsed_plan = DevelopmentPlan(
-            status="ready",
-            objective="Add planning.",
-            understanding="Add a read-only command.",
-            acceptance_criteria=["A plan is saved."],
-            verification=["Run tests."],
-        )
-        raw_response = SimpleNamespace(
+    def raw_response(self, finish_reason="stop"):
+        return SimpleNamespace(
             id="response-1",
-            response_metadata={"finish_reason": "stop"},
+            response_metadata={"finish_reason": finish_reason},
             usage_metadata={"total_tokens": 20},
             content="",
             additional_kwargs={},
         )
+
+    def test_returns_structured_plan_and_model_metadata(self):
+        parsed_plan = DevelopmentPlan(
+            status="ready",
+            objective="Add planning.",
+            design_summary="Add a read-only command.",
+            acceptance_criteria=["A plan is saved."],
+            verification=["Run tests."],
+        )
         node = make_plan_node(FakeModel({
-            "raw": raw_response,
+            "raw": self.raw_response(),
             "parsed": parsed_plan,
             "parsing_error": None,
         }))
-
-        result = node({
-            "request": "Add planning.",
-            "context_text": "{}",
-            "save_model_exchange": False,
-            "model_result": {},
-            "model_exchange": {},
-        })
+        result = node(state())
 
         self.assertEqual(result["plan"]["status"], "ready")
         self.assertEqual(result["model_result"]["plan"]["finish_reason"], "stop")
-        self.assertEqual(result["model_exchange"], {})
 
-    def test_truncated_response_returns_needs_context(self):
-        raw_response = SimpleNamespace(
-            id="response-1",
-            response_metadata={"finish_reason": "length"},
-            usage_metadata={},
-            content="",
-            additional_kwargs={},
+    def test_refinement_records_previous_plan(self):
+        parsed_plan = DevelopmentPlan(
+            status="ready",
+            objective="Improve planning.",
+            design_summary="Revise the prior plan.",
+            revision={"changes": ["Added validation."]},
         )
         node = make_plan_node(FakeModel({
-            "raw": raw_response,
+            "raw": self.raw_response(),
+            "parsed": parsed_plan,
+            "parsing_error": None,
+        }))
+        result = node(state(previous_plan={"status": "ready"}))
+
+        self.assertEqual(result["plan"]["revision"]["based_on"], "/plans/old.json")
+        self.assertEqual(result["plan"]["revision"]["changes"], ["Added validation."])
+
+    def test_truncated_response_returns_repository_context_status(self):
+        node = make_plan_node(FakeModel({
+            "raw": self.raw_response("length"),
             "parsed": None,
             "parsing_error": ValueError("incomplete"),
         }))
+        result = node(state())
 
-        result = node({
-            "request": "Add planning.",
-            "context_text": "{}",
-            "save_model_exchange": True,
-            "model_result": {},
-            "model_exchange": {},
-        })
-
-        self.assertEqual(result["plan"]["status"], "needs_context")
-        self.assertIn("output-token limit", result["plan"]["uncertainties"][0])
-        self.assertIn("prompt", result["model_exchange"]["plan"]["request"])
-
-
-class ContextRequestTests(unittest.TestCase):
-    def test_returns_bounded_context_request_and_metadata(self):
-        parsed_request = PlanningContextRequest(
-            files=["src/devflow/cli.py"],
-            searches=["planning_flow"],
-            reason="Find the CLI and planning entry point.",
+        self.assertEqual(result["plan"]["status"], "needs_repository_context")
+        self.assertIn(
+            "output-token limit",
+            result["plan"]["outstanding_items"][0]["question"],
         )
-        raw_response = SimpleNamespace(
-            id="response-1",
-            response_metadata={"finish_reason": "stop"},
-            usage_metadata={"total_tokens": 12},
-            content="",
-            additional_kwargs={},
-        )
-        node = make_context_request_node(FakeModel({
-            "raw": raw_response,
-            "parsed": parsed_request,
-            "parsing_error": None,
-        }))
-
-        result = node({
-            "request": "Improve planning context.",
-            "repository_context": {"directory_summary": "src/"},
-            "max_requested_files": 8,
-            "max_searches": 6,
-            "save_model_exchange": True,
-            "model_result": {},
-            "model_exchange": {},
-        })
-
-        self.assertEqual(result["context_request"]["files"], ["src/devflow/cli.py"])
-        self.assertEqual(
-            result["model_result"]["context_request"]["finish_reason"],
-            "stop",
-        )
-        self.assertIn("context_request", result["model_exchange"])

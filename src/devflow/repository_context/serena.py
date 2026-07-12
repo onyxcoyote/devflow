@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
@@ -497,6 +498,20 @@ def run_serena_context(request: str, config: SerenaContextConfig) -> dict[str, A
         json.dumps({
             "request": request,
             "repo_path": config.repo_path,
+            "head_commit": subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=config.repo_path,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip(),
+            "git_status": subprocess.run(
+                ["git", "status", "--short"],
+                cwd=config.repo_path,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout,
             "serena_command": [config.command, *config.args],
             "allowed_tools": sorted(READ_ONLY_SERENA_TOOLS),
             "available_allowed_tools": available_tools,
