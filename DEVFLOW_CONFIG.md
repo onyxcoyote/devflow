@@ -26,7 +26,7 @@ temperature = 0
 
 [providers.ollama]
 model = "your-local-model"
-base_url = "http://192.168.1.50:11434"
+base_url = "http://127.0.0.1:11434"
 
 [providers.openrouter]
 model = "your-openrouter-model"
