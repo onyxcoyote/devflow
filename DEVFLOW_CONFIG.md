@@ -91,6 +91,7 @@ max_total_tool_calls = 36
 max_tool_result_chars = 8000
 max_transcript_chars = 60000
 max_report_output_tokens = 5000
+model_request_min_interval_seconds = 2.0
 ```
 
 Then compare Serena's grounded context report and transcript with the native
@@ -102,6 +103,9 @@ devflow serena-context "Describe the development outcome"
 
 Devflow exposes only Serena retrieval tools during this spike. Editing, shell,
 memory-writing, and project-mutation tools are not available to the model.
+Model requests are started no more frequently than the configured minimum interval.
+Serena server diagnostics are saved to `serena.log` in the run directory instead of
+being printed live; tool events and errors remain available in the transcript.
 
 A repository may override `[model]` or `[providers.*]`, but normally it does not need to.
 

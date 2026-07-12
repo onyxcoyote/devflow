@@ -180,7 +180,10 @@ def _run_serena_context(args: argparse.Namespace) -> int:
     print(f"SERENA CONTEXT: {report['status'].upper()}")
     print(f"Relevant files: {len(report['relevant_files'])}")
     print(f"Context: {result['paths']['context']}")
+    print(f"Evidence: {result['paths']['evidence']}")
+    print(f"Round reports: {result['paths']['rounds']}")
     print(f"Transcript: {result['paths']['transcript']}")
+    print(f"Log: {result['paths']['log']}")
     return 0 if report["status"] == "sufficient" else 2
 
 

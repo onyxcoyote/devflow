@@ -99,6 +99,7 @@ class SerenaSpikeConfig:
     max_tool_result_chars: int
     max_transcript_chars: int
     max_report_output_tokens: int
+    model_request_min_interval_seconds: float
     model: Any
 
 
@@ -147,8 +148,35 @@ def load_serena_spike_config(planning: PlanningConfig) -> SerenaSpikeConfig:
             500,
             min(10_000, int(settings.get("max_report_output_tokens", 5_000))),
         ),
+        model_request_min_interval_seconds=max(
+            0.0,
+            float(settings.get("model_request_min_interval_seconds", 2.0)),
+        ),
         model=planning.model,
     )
+
+
+class _ModelRequestLimiter:
+    def __init__(self, minimum_interval_seconds: float):
+        self.minimum_interval_seconds = minimum_interval_seconds
+        self.last_started_at: float | None = None
+        self.request_count = 0
+        self.wait_count = 0
+        self.total_wait_seconds = 0.0
+
+    async def invoke(self, model, messages):
+        if self.last_started_at is not None:
+            wait_seconds = max(
+                0.0,
+                self.minimum_interval_seconds - (perf_counter() - self.last_started_at),
+            )
+            if wait_seconds > 0:
+                self.wait_count += 1
+                self.total_wait_seconds += wait_seconds
+                await asyncio.sleep(wait_seconds)
+        self.last_started_at = perf_counter()
+        self.request_count += 1
+        return await model.ainvoke(messages)
 
 
 def _langchain_tools(mcp_tools) -> list[dict[str, Any]]:
@@ -249,6 +277,7 @@ async def _explore_round(
     session,
     model,
     report_model,
+    request_limiter: _ModelRequestLimiter,
     tools: list[dict[str, Any]],
     *,
     round_number: int,
@@ -284,7 +313,7 @@ async def _explore_round(
     calls_attempted = 0
 
     while calls_attempted < tool_call_budget:
-        response = await explorer.ainvoke(messages)
+        response = await request_limiter.invoke(explorer, messages)
         messages.append(response)
         tool_calls = response.tool_calls or []
         if not tool_calls:
@@ -376,7 +405,7 @@ async def _explore_round(
     ]
     for attempt, prompt in enumerate(prompts, start=1):
         try:
-            report = await structured_report_model.ainvoke(prompt)
+            report = await request_limiter.invoke(structured_report_model, prompt)
             return report.model_dump(), events, calls_attempted, attempt_errors
         except Exception as error:
             attempt_errors.append({
@@ -428,6 +457,9 @@ async def _explore_with_session(request: str, config: SerenaSpikeConfig, session
     total_tool_calls = 0
     report: dict[str, Any] | None = None
     report_errors: list[dict[str, Any]] = []
+    request_limiter = _ModelRequestLimiter(
+        config.model_request_min_interval_seconds,
+    )
 
     for round_number in range(1, config.max_rounds + 1):
         remaining = config.max_total_tool_calls - total_tool_calls
@@ -444,6 +476,7 @@ async def _explore_with_session(request: str, config: SerenaSpikeConfig, session
             session,
             model,
             report_model,
+            request_limiter,
             tools,
             round_number=round_number,
             prior_report=report,
@@ -455,6 +488,10 @@ async def _explore_with_session(request: str, config: SerenaSpikeConfig, session
         all_events.extend(events)
         reports.append(report)
         report_errors.extend(round_report_errors)
+        print(
+            f"Round {round_number}: {calls} tool calls "
+            f"({total_tool_calls}/{config.max_total_tool_calls} total)"
+        )
         if not _should_continue(
             report,
             round_number=round_number,
@@ -472,10 +509,15 @@ async def _explore_with_session(request: str, config: SerenaSpikeConfig, session
         [tool["function"]["name"] for tool in tools],
         total_tool_calls,
         report_errors,
+        request_limiter,
     )
 
 
-async def _run_serena(request: str, config: SerenaSpikeConfig):
+async def _run_serena(
+    request: str,
+    config: SerenaSpikeConfig,
+    stderr_log,
+):
     try:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
@@ -486,18 +528,26 @@ async def _run_serena(request: str, config: SerenaSpikeConfig):
         command=config.command,
         args=list(config.args),
     )
-    async with stdio_client(parameters) as (read, write):
+    async with stdio_client(parameters, errlog=stderr_log) as (read, write):
         async with ClientSession(read, write) as session:
             return await _explore_with_session(request, config, session)
 
 
 def run_serena_spike(request: str, config: SerenaSpikeConfig) -> dict[str, Any]:
-    report, events, reports, available_tools, total_tool_calls, report_errors = asyncio.run(
-        _run_serena(request, config)
-    )
     root = Path(config.output_dir)
     run_dir = root / "runs" / datetime.now().strftime("%Y-%m-%d_%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=False)
+    log_path = run_dir / "serena.log"
+    with log_path.open("w", encoding="utf-8") as stderr_log:
+        (
+            report,
+            events,
+            reports,
+            available_tools,
+            total_tool_calls,
+            report_errors,
+            request_limiter,
+        ) = asyncio.run(_run_serena(request, config, stderr_log))
     report_path = run_dir / "context.json"
     transcript_path = run_dir / "serena-transcript.json"
     rounds_path = run_dir / "round-reports.json"
@@ -529,6 +579,15 @@ def run_serena_spike(request: str, config: SerenaSpikeConfig) -> dict[str, Any]:
             "max_tool_result_chars": config.max_tool_result_chars,
             "max_transcript_chars": config.max_transcript_chars,
             "max_report_output_tokens": config.max_report_output_tokens,
+            "model_request_min_interval_seconds": (
+                config.model_request_min_interval_seconds
+            ),
+            "model_requests": request_limiter.request_count,
+            "model_request_waits": request_limiter.wait_count,
+            "model_request_wait_seconds": round(
+                request_limiter.total_wait_seconds,
+                3,
+            ),
             "report_errors": report_errors,
             "model": {
                 "provider": config.model.provider,
@@ -548,5 +607,6 @@ def run_serena_spike(request: str, config: SerenaSpikeConfig) -> dict[str, Any]:
             "transcript": str(transcript_path.resolve()),
             "rounds": str(rounds_path.resolve()),
             "evidence": str(evidence_path.resolve()),
+            "log": str(log_path.resolve()),
         },
     }

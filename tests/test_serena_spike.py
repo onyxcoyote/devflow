@@ -12,6 +12,7 @@ from devflow.planning.serena import (
     _round_focus_instruction,
     _should_continue,
     _tool_result_text,
+    _ModelRequestLimiter,
 )
 
 
@@ -79,6 +80,7 @@ class SerenaContinuationTests(unittest.TestCase):
             max_tool_result_chars=8000,
             max_transcript_chars=60000,
             max_report_output_tokens=5000,
+            model_request_min_interval_seconds=2.0,
             model=None,
         )
 
@@ -139,6 +141,32 @@ class SerenaContinuationTests(unittest.TestCase):
 
         self.assertIn("repository-answerable gaps", instruction)
         self.assertIn("user decisions", instruction)
+
+
+class SerenaModelRequestLimiterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_invokes_model_without_waiting_for_first_request(self):
+        class Model:
+            async def ainvoke(self, value):
+                return value
+
+        limiter = _ModelRequestLimiter(0.0)
+
+        self.assertEqual(await limiter.invoke(Model(), "request"), "request")
+        self.assertEqual(limiter.request_count, 1)
+        self.assertEqual(limiter.wait_count, 0)
+
+    async def test_records_wait_between_quick_requests(self):
+        class Model:
+            async def ainvoke(self, value):
+                return value
+
+        limiter = _ModelRequestLimiter(0.001)
+        await limiter.invoke(Model(), "first")
+        await limiter.invoke(Model(), "second")
+
+        self.assertEqual(limiter.request_count, 2)
+        self.assertEqual(limiter.wait_count, 1)
+        self.assertGreater(limiter.total_wait_seconds, 0)
 
 
 class SerenaTranscriptTests(unittest.TestCase):
