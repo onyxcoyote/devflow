@@ -13,5 +13,10 @@ google/gemma-4-26b-a4b-it PASS
 
 
 plan:
-google/gemma-4-26b-a4b-it FAI`L (complex json, whitespace loops)
-
+google/gemma-4-26b-a4b-it FAIL (complex json, whitespace loops)
+GPT-OSS 20B
+gpt4o-mini
+GPT-5.4 mini
+gpt5.5 
+Gemini 3.5 Flash
+Claude Sonnet 4.5
