@@ -61,6 +61,11 @@ max_output_tokens = 8000
 compact_retry_output_tokens = 4000
 ```
 
+Planning currently uses LangChain function calling with the `portable-v1` plan schema.
+The schema requires every field and rejects unknown fields for broad provider compatibility.
+Text-length and list-size limits are model guidance rather than provider-enforced JSON Schema
+constraints; the output token limits above remain enforced by the model client.
+
 Run a read-only plan with:
 
 ```bash

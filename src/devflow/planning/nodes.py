@@ -5,7 +5,7 @@ from time import perf_counter
 
 from devflow.code_review.nodes import _model_result_metadata, _raw_response_data
 
-from .schemas import DevelopmentPlan
+from .schemas import DevelopmentPlan, PLAN_SCHEMA_VERSION, PLAN_STRUCTURED_OUTPUT_METHOD
 from .state import PlanningState
 
 
@@ -119,6 +119,7 @@ def make_plan_node(model, compact_retry_model, logger):
                 structured_model = attempt_model.with_structured_output(
                     DevelopmentPlan,
                     include_raw=True,
+                    method=PLAN_STRUCTURED_OUTPUT_METHOD,
                 )
                 logger.info(
                     "Invoking planning model attempt %d; context_chars=%d previous_plan=%s",
@@ -137,6 +138,8 @@ def make_plan_node(model, compact_retry_model, logger):
                     elapsed_seconds,
                 )
                 metadata["configured_output_limit"] = configured_limit
+                metadata["structured_output_method"] = PLAN_STRUCTURED_OUTPUT_METHOD
+                metadata["schema_version"] = PLAN_SCHEMA_VERSION
                 attempt_metadata.append(metadata)
                 if state["save_model_exchange"]:
                     exchange_attempt["response"] = _raw_response_data(raw_response)
@@ -165,6 +168,8 @@ def make_plan_node(model, compact_retry_model, logger):
                     "exception_type": type(error).__name__,
                     "exception_message": str(error)[:2000],
                     "configured_output_limit": configured_limit,
+                    "structured_output_method": PLAN_STRUCTURED_OUTPUT_METHOD,
+                    "schema_version": PLAN_SCHEMA_VERSION,
                 }
                 partial_completion = _serialize_partial_completion(error)
                 failure["partial_completion_captured"] = (

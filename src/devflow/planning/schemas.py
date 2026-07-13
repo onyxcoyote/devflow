@@ -2,6 +2,9 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+PLAN_SCHEMA_VERSION = "portable-v1"
+PLAN_STRUCTURED_OUTPUT_METHOD = "function_calling"
+
 ShortText = Annotated[
     str,
     Field(description="Concise text; keep to 500 characters or fewer."),

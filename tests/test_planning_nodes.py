@@ -2,7 +2,11 @@ import unittest
 from types import SimpleNamespace
 
 from devflow.planning.nodes import create_plan_report, make_plan_node
-from devflow.planning.schemas import DevelopmentPlan
+from devflow.planning.schemas import (
+    DevelopmentPlan,
+    PLAN_SCHEMA_VERSION,
+    PLAN_STRUCTURED_OUTPUT_METHOD,
+)
 
 
 class FakeLogger:
@@ -31,15 +35,16 @@ class FakeModel:
     def __init__(self, result):
         self.result = result
 
-    def with_structured_output(self, schema, include_raw=False):
+    def with_structured_output(self, schema, include_raw=False, **kwargs):
         self.schema = schema
+        self.structured_output_options = kwargs
         return FakeStructuredModel(self.result)
 
 
 class FailingModel(FakeModel):
     max_tokens = 8000
 
-    def with_structured_output(self, schema, include_raw=False):
+    def with_structured_output(self, schema, include_raw=False, **kwargs):
         return FakeStructuredModel(FakeLengthError())
 
 
@@ -132,6 +137,14 @@ class CreatePlanTests(unittest.TestCase):
 
         self.assertEqual(result["plan"]["status"], "ready")
         self.assertEqual(result["model_result"]["plan"]["finish_reason"], "stop")
+        self.assertEqual(
+            model.structured_output_options["method"],
+            PLAN_STRUCTURED_OUTPUT_METHOD,
+        )
+        self.assertEqual(
+            result["model_result"]["plan"]["schema_version"],
+            PLAN_SCHEMA_VERSION,
+        )
 
     def test_refinement_records_previous_plan(self):
         parsed_plan = DevelopmentPlan(

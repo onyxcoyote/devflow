@@ -11,6 +11,7 @@ from devflow.code_review.models import get_code_review_model
 
 from .config import PlanningConfig
 from .graph import build_planning_graph
+from .schemas import PLAN_SCHEMA_VERSION, PLAN_STRUCTURED_OUTPUT_METHOD
 
 
 @task
@@ -26,6 +27,11 @@ def run_planning_graph(initial_state: dict[str, Any], config: PlanningConfig) ->
         "Creating planning models with output limits initial=%d compact_retry=%d",
         config.max_output_tokens,
         config.compact_retry_output_tokens,
+    )
+    logger.info(
+        "Planning structured output: method=%s schema=%s size_limits=guidance-only",
+        PLAN_STRUCTURED_OUTPUT_METHOD,
+        PLAN_SCHEMA_VERSION,
     )
     model = get_code_review_model(
         config.model,
