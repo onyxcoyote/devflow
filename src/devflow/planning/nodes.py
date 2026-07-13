@@ -202,12 +202,19 @@ def make_plan_node(model, compact_retry_model, logger):
                 status="blocked",
                 objective=state["request"],
                 design_summary="The planning model did not return a valid bounded plan.",
+                assumptions=[],
+                proposed_changes=[],
                 outstanding_items=[{
                     "kind": "external_information",
                     "question": "; ".join(failure_details)[:1500],
                     "impact": "No reliable structured implementation plan was produced.",
                     "suggested_action": "Inspect plan_attempts in evidence.json and retry with a different model or limits.",
                 }],
+                decisions=[],
+                acceptance_criteria=[],
+                verification=[],
+                risks=[],
+                revision={"based_on": None, "changes": []},
             ).model_dump()
         if previous_plan is not None:
             plan["revision"]["based_on"] = state["context_source"].get(

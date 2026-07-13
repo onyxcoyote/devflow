@@ -78,9 +78,15 @@ class CreatePlanReportTests(unittest.TestCase):
                 "change": "Add the plan command.",
                 "reason": "Expose planning to users.",
                 "evidence": ["src/devflow/cli.py:_run_plan"],
+                "dependencies": [],
             }],
+            assumptions=[],
+            outstanding_items=[],
+            decisions=[],
             acceptance_criteria=["The command produces plan.md."],
             verification=["Run unit tests."],
+            risks=[],
+            revision={"based_on": None, "changes": []},
         ).model_dump()
         report = create_plan_report({
             "model_info": {"model": "test-model", "provider": "ollama"},
@@ -107,8 +113,14 @@ class CreatePlanTests(unittest.TestCase):
             status="ready",
             objective="Add planning.",
             design_summary="Add a read-only command.",
+            assumptions=[],
+            proposed_changes=[],
+            outstanding_items=[],
+            decisions=[],
             acceptance_criteria=["A plan is saved."],
             verification=["Run tests."],
+            risks=[],
+            revision={"based_on": None, "changes": []},
         )
         model = FakeModel({
             "raw": self.raw_response(),
@@ -126,7 +138,14 @@ class CreatePlanTests(unittest.TestCase):
             status="ready",
             objective="Improve planning.",
             design_summary="Revise the prior plan.",
-            revision={"changes": ["Added validation."]},
+            assumptions=[],
+            proposed_changes=[],
+            outstanding_items=[],
+            decisions=[],
+            acceptance_criteria=[],
+            verification=[],
+            risks=[],
+            revision={"based_on": None, "changes": ["Added validation."]},
         )
         model = FakeModel({
             "raw": self.raw_response(),
@@ -154,6 +173,27 @@ class CreatePlanTests(unittest.TestCase):
             result["plan"]["outstanding_items"][0]["question"],
         )
         self.assertEqual(len(result["model_result"]["plan_attempts"]), 2)
+
+    def test_plan_schema_uses_portable_required_object_subset(self):
+        schema = DevelopmentPlan.model_json_schema()
+
+        def inspect(value):
+            if isinstance(value, dict):
+                if value.get("type") == "object":
+                    self.assertFalse(value.get("additionalProperties", True))
+                    self.assertEqual(
+                        set(value.get("required", [])),
+                        set(value.get("properties", {})),
+                    )
+                self.assertNotIn("maxLength", value)
+                self.assertNotIn("maxItems", value)
+                for child in value.values():
+                    inspect(child)
+            elif isinstance(value, list):
+                for child in value:
+                    inspect(child)
+
+        inspect(schema)
 
     def test_exception_exchange_captures_request_limit_and_partial_completion(self):
         current_state = state()
