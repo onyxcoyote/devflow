@@ -35,6 +35,17 @@ def _serialize_partial_completion(error):
     return str(completion)
 
 
+def _plan_quality_issue(plan: dict) -> str | None:
+    if plan["status"] in {"ready", "needs_user_decision"} and not plan[
+        "proposed_changes"
+    ]:
+        return (
+            f"status={plan['status']} requires concrete proposed_changes; "
+            "provide the recommended implementation path even when a user decision remains"
+        )
+    return None
+
+
 def prepare_plan_context(state: PlanningState) -> dict:
     return {
         "context_text": json.dumps(
@@ -71,13 +82,20 @@ def make_plan_node(model, compact_retry_model, logger):
             "evidence source. Design recommendations may be planner reasoning.\n"
             "Each proposed change must name one file and describe its responsibility. Include "
             "tests and validation in verification and acceptance criteria.\n"
+            "Make ordinary engineering decisions when repository evidence supports them. The "
+            "existence of multiple reasonable approaches is not by itself a blocker: choose and "
+            "justify a recommended approach.\n"
             "Be concise. Do not repeat the repository context, source code, or the same change "
             "in multiple fields. Prefer short actionable statements.\n"
             "Use needs_repository_context when a specific repository question prevents a "
-            "responsible plan, needs_user_decision when a material product or architecture choice "
-            "remains, not_feasible when the requested outcome cannot responsibly be planned, and "
-            "ready only when the plan is actionable. Preserve unresolved questions explicitly in "
-            "outstanding_items and decisions.\n\n"
+            "responsible plan. Use needs_user_decision only when a choice materially changes "
+            "external behavior, compatibility, security, data handling, or product requirements "
+            "and cannot responsibly be inferred. For needs_user_decision, still provide concrete "
+            "file changes for the recommended default and explain how the alternative differs. "
+            "Use not_feasible when the requested outcome cannot responsibly be planned, and ready "
+            "only when the plan is actionable. Preserve genuine unresolved questions explicitly "
+            "in outstanding_items and decisions. ready and needs_user_decision must both include "
+            "at least one proposed change.\n\n"
             f"DEVELOPMENT REQUEST\n===================\n{state['request']}\n\n"
             f"REPOSITORY CONTEXT\n==================\n{state['context_text']}\n\n"
             f"PREVIOUS PLAN\n=============\n{previous_text}"
@@ -153,13 +171,32 @@ def make_plan_node(model, compact_retry_model, logger):
                     parsed_plan is not None and parsing_error is None,
                 )
                 if not truncated and parsing_error is None and parsed_plan is not None:
-                    plan = parsed_plan.model_dump()
-                    break
-                failure_details.append(
-                    "output limit reached" if truncated else (
-                        metadata["parsing_error"] or "no parsed plan returned"
+                    candidate_plan = parsed_plan.model_dump()
+                    quality_issue = _plan_quality_issue(candidate_plan)
+                    metadata["quality_issue"] = quality_issue
+                    if quality_issue is None:
+                        plan = candidate_plan
+                        break
+                    failure_details.append(quality_issue)
+                    logger.warning(
+                        "Planning attempt %d failed quality validation: %s",
+                        attempt,
+                        quality_issue,
                     )
-                )
+                    if attempt == 1:
+                        prompts[1] = (
+                            "The previous response was structurally valid but not actionable: "
+                            f"{quality_issue}. Correct that issue in an especially compact plan. "
+                            "Make reasonable engineering decisions, include concrete file changes, "
+                            "and reserve unresolved items for genuinely blocking questions.\n\n"
+                            + prompt
+                        )
+                else:
+                    failure_details.append(
+                        "output limit reached" if truncated else (
+                            metadata["parsing_error"] or "no parsed plan returned"
+                        )
+                    )
             except Exception as error:
                 elapsed_seconds = perf_counter() - started_at
                 failure = {

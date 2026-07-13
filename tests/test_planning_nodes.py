@@ -113,13 +113,23 @@ class CreatePlanTests(unittest.TestCase):
             additional_kwargs={},
         )
 
+    def proposed_change(self):
+        return {
+            "path": "src/devflow/planning/nodes.py",
+            "symbols": ["make_plan_node"],
+            "change": "Improve planning behavior.",
+            "reason": "Produce an actionable implementation plan.",
+            "evidence": ["src/devflow/planning/nodes.py:make_plan_node"],
+            "dependencies": [],
+        }
+
     def test_returns_structured_plan_and_model_metadata(self):
         parsed_plan = DevelopmentPlan(
             status="ready",
             objective="Add planning.",
             design_summary="Add a read-only command.",
             assumptions=[],
-            proposed_changes=[],
+            proposed_changes=[self.proposed_change()],
             outstanding_items=[],
             decisions=[],
             acceptance_criteria=["A plan is saved."],
@@ -152,7 +162,7 @@ class CreatePlanTests(unittest.TestCase):
             objective="Improve planning.",
             design_summary="Revise the prior plan.",
             assumptions=[],
-            proposed_changes=[],
+            proposed_changes=[self.proposed_change()],
             outstanding_items=[],
             decisions=[],
             acceptance_criteria=[],
@@ -170,6 +180,74 @@ class CreatePlanTests(unittest.TestCase):
 
         self.assertEqual(result["plan"]["revision"]["based_on"], "/plans/old.json")
         self.assertEqual(result["plan"]["revision"]["changes"], ["Added validation."])
+
+    def test_empty_actionable_plan_retries_with_concrete_changes(self):
+        empty_plan = DevelopmentPlan(
+            status="needs_user_decision",
+            objective="Improve planning.",
+            design_summary="Choose an approach after clarification.",
+            assumptions=[],
+            proposed_changes=[],
+            outstanding_items=[],
+            decisions=[],
+            acceptance_criteria=[],
+            verification=[],
+            risks=[],
+            revision={"based_on": None, "changes": []},
+        )
+        actionable_plan = DevelopmentPlan.model_validate({
+            **empty_plan.model_dump(),
+            "proposed_changes": [self.proposed_change()],
+        })
+        first_model = FakeModel({
+            "raw": self.raw_response(),
+            "parsed": empty_plan,
+            "parsing_error": None,
+        })
+        retry_model = FakeModel({
+            "raw": self.raw_response(),
+            "parsed": actionable_plan,
+            "parsing_error": None,
+        })
+
+        result = make_plan_node(first_model, retry_model, FakeLogger())(state())
+
+        self.assertEqual(len(result["plan"]["proposed_changes"]), 1)
+        self.assertIn(
+            "requires concrete proposed_changes",
+            result["model_result"]["plan_attempts"][0]["quality_issue"],
+        )
+        self.assertIsNone(result["model_result"]["plan_attempts"][1]["quality_issue"])
+
+    def test_blocked_plan_can_omit_proposed_changes(self):
+        blocked_plan = DevelopmentPlan(
+            status="needs_repository_context",
+            objective="Improve planning.",
+            design_summary="A required repository fact is missing.",
+            assumptions=[],
+            proposed_changes=[],
+            outstanding_items=[{
+                "kind": "repository_context",
+                "question": "Which module owns this behavior?",
+                "impact": "Responsible file changes cannot be identified.",
+                "suggested_action": "Collect the missing module context.",
+            }],
+            decisions=[],
+            acceptance_criteria=[],
+            verification=[],
+            risks=[],
+            revision={"based_on": None, "changes": []},
+        )
+        model = FakeModel({
+            "raw": self.raw_response(),
+            "parsed": blocked_plan,
+            "parsing_error": None,
+        })
+
+        result = make_plan_node(model, model, FakeLogger())(state())
+
+        self.assertEqual(result["plan"]["status"], "needs_repository_context")
+        self.assertEqual(len(result["model_result"]["plan_attempts"]), 1)
 
     def test_two_truncated_responses_return_blocked_status(self):
         model = FakeModel({
