@@ -35,6 +35,14 @@ def run_planning_graph(initial_state: dict[str, Any], config: PlanningConfig) ->
         config.model,
         max_output_tokens=config.compact_retry_output_tokens,
     )
+    logger.info(
+        "Planning client parameters: initial max_tokens=%s num_predict=%s; "
+        "compact retry max_tokens=%s num_predict=%s",
+        getattr(model, "max_tokens", None),
+        getattr(model, "num_predict", None),
+        getattr(compact_retry_model, "max_tokens", None),
+        getattr(compact_retry_model, "num_predict", None),
+    )
     logger.info("Building planning graph")
     graph = build_planning_graph(model, compact_retry_model, logger)
     logger.info("Invoking planning graph")

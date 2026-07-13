@@ -16,13 +16,15 @@ class FakeLogger:
         pass
 
 
-class FakeStructuredModel:
-    def __init__(self, result):
-        self.result = result
+class FakeCompletion:
+    def model_dump(self, mode=None):
+        return {"choices": [{"message": {"content": "partial output"}}]}
 
-    def invoke(self, prompt):
-        self.prompt = prompt
-        return self.result
+
+class FakeLengthError(Exception):
+    def __init__(self):
+        super().__init__("length limit reached")
+        self.completion = FakeCompletion()
 
 
 class FakeModel:
@@ -32,6 +34,24 @@ class FakeModel:
     def with_structured_output(self, schema, include_raw=False):
         self.schema = schema
         return FakeStructuredModel(self.result)
+
+
+class FailingModel(FakeModel):
+    max_tokens = 8000
+
+    def with_structured_output(self, schema, include_raw=False):
+        return FakeStructuredModel(FakeLengthError())
+
+
+class FakeStructuredModel:
+    def __init__(self, result):
+        self.result = result
+
+    def invoke(self, prompt):
+        self.prompt = prompt
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
 
 
 def state(previous_plan=None):
@@ -134,3 +154,19 @@ class CreatePlanTests(unittest.TestCase):
             result["plan"]["outstanding_items"][0]["question"],
         )
         self.assertEqual(len(result["model_result"]["plan_attempts"]), 2)
+
+    def test_exception_exchange_captures_request_limit_and_partial_completion(self):
+        current_state = state()
+        current_state["save_model_exchange"] = True
+        model = FailingModel(None)
+        node = make_plan_node(model, model, FakeLogger())
+
+        result = node(current_state)
+
+        attempt = result["model_exchange"]["plan_attempts"][0]
+        self.assertEqual(attempt["configured_output_limit"], 8000)
+        self.assertIn("DEVELOPMENT REQUEST", attempt["request"]["prompt"])
+        self.assertEqual(
+            attempt["error"]["partial_completion"]["choices"][0]["message"]["content"],
+            "partial output",
+        )

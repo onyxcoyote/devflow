@@ -9,6 +9,32 @@ from .schemas import DevelopmentPlan
 from .state import PlanningState
 
 
+def _configured_output_limit(model):
+    for name in ("max_tokens", "num_predict", "max_output_tokens"):
+        value = getattr(model, name, None)
+        if value is not None:
+            return value
+    model_kwargs = getattr(model, "model_kwargs", {}) or {}
+    return (
+        model_kwargs.get("max_tokens")
+        or model_kwargs.get("num_predict")
+        or model_kwargs.get("max_output_tokens")
+    )
+
+
+def _serialize_partial_completion(error):
+    completion = getattr(error, "completion", None)
+    if completion is None:
+        return None
+    model_dump = getattr(completion, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return model_dump(mode="json")
+        except (TypeError, ValueError):
+            return model_dump()
+    return str(completion)
+
+
 def prepare_plan_context(state: PlanningState) -> dict:
     return {
         "context_text": json.dumps(
@@ -77,10 +103,17 @@ def make_plan_node(model, compact_retry_model, logger):
             start=1,
         ):
             started_at = perf_counter()
+            configured_limit = _configured_output_limit(attempt_model)
+            exchange_attempt = {
+                "attempt": attempt,
+                "configured_output_limit": configured_limit,
+                "request": {"prompt": attempt_prompt},
+            }
             logger.info(
-                "Preparing structured planning model for attempt %d (%s)",
+                "Preparing structured planning model for attempt %d (%s); client_output_limit=%s",
                 attempt,
                 "initial" if attempt == 1 else "compact retry",
+                configured_limit if configured_limit is not None else "unknown",
             )
             try:
                 structured_model = attempt_model.with_structured_output(
@@ -103,12 +136,10 @@ def make_plan_node(model, compact_retry_model, logger):
                     parsing_error,
                     elapsed_seconds,
                 )
+                metadata["configured_output_limit"] = configured_limit
                 attempt_metadata.append(metadata)
                 if state["save_model_exchange"]:
-                    exchange_attempts.append({
-                        "request": {"prompt": attempt_prompt},
-                        "response": _raw_response_data(raw_response),
-                    })
+                    exchange_attempt["response"] = _raw_response_data(raw_response)
                 truncated = metadata["finish_reason"] in {"length", "max_tokens"}
                 logger.info(
                     "Planning attempt %d completed in %.1fs: finish_reason=%s total_tokens=%s parsed=%s",
@@ -133,7 +164,12 @@ def make_plan_node(model, compact_retry_model, logger):
                     "elapsed_seconds": round(elapsed_seconds, 3),
                     "exception_type": type(error).__name__,
                     "exception_message": str(error)[:2000],
+                    "configured_output_limit": configured_limit,
                 }
+                partial_completion = _serialize_partial_completion(error)
+                failure["partial_completion_captured"] = (
+                    partial_completion is not None
+                )
                 attempt_metadata.append(failure)
                 failure_details.append(
                     f"{type(error).__name__}: {str(error)[:500]}"
@@ -144,6 +180,14 @@ def make_plan_node(model, compact_retry_model, logger):
                     elapsed_seconds,
                     failure_details[-1],
                 )
+                if state["save_model_exchange"]:
+                    exchange_attempt["error"] = {
+                        **failure,
+                        "partial_completion": partial_completion,
+                    }
+            finally:
+                if state["save_model_exchange"]:
+                    exchange_attempts.append(exchange_attempt)
 
         model_result = {
             **state["model_result"],
