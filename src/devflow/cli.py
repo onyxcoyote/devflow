@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .code_review.config import load_code_review_config
 from .code_review.flow import code_review_flow
+from .implementation.flow import implementation_flow
 from .planning.config import load_planning_config
 from .planning.artifacts import create_plan_run_dir
 from .planning.flow import planning_flow
@@ -95,6 +96,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     serena.add_argument("request", help="Development outcome to investigate.")
     _add_common_config_arguments(serena)
+    implement = subparsers.add_parser(
+        "implement",
+        help="Create and optionally apply edits from an approved implementation plan.",
+    )
+    implement.add_argument("plan", help="Path to an approved plan.json.")
+    _add_common_config_arguments(implement)
+    implement.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Apply a valid implementation proposal without prompting.",
+    )
     return parser
 
 
@@ -347,6 +358,23 @@ def _run_serena_context(args: argparse.Namespace) -> int:
     return 0 if report["status"] == "sufficient" else 2
 
 
+def _run_implementation(args: argparse.Namespace) -> int:
+    config = load_code_review_config(
+        args.repo,
+        args.config,
+        global_config_path=args.global_config,
+        provider_override=args.provider,
+        model_override=args.model,
+    )
+    _print_resolved_config(config)
+    result = implementation_flow(args.plan, config, auto_approve=args.yes)
+    print(f"Proposal: {result['paths']['proposal']}")
+    print(f"Evidence: {result['paths']['evidence']}")
+    if result["proposal"]["status"] != "ready":
+        return 2
+    return 0 if result["applied"] else 2
+
+
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
@@ -356,8 +384,10 @@ def main() -> None:
             status = _run_review(args)
         elif args.command == "plan":
             status = _run_plan(args)
-        else:
+        elif args.command == "serena-context":
             status = _run_serena_context(args)
+        else:
+            status = _run_implementation(args)
     except (FileNotFoundError, ValueError) as error:
         parser.error(str(error))
         return

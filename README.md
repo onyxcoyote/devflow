@@ -30,6 +30,7 @@ Script List:
 devflow review - code review (and some relevant CI tasks like running tests)
 devflow plan - Serena-backed structured implementation planning and plan refinement
 devflow serena-context - relevant file selection using serena MCP
+devflow implement - propose, approve, apply, and validate edits from a ready plan
 
 # Run Serena, then create a plan
 devflow plan "request"
@@ -39,6 +40,12 @@ devflow plan --yes "request"
 
 # Open plan.json after the run without the final prompt
 devflow plan --open-plan "request"
+
+# Propose edits from an approved plan, then ask before applying them
+devflow implement /path/to/plan.json
+
+# Apply a valid proposal without the apply prompt
+devflow implement --yes /path/to/plan.json
 
 # Reuse Serena context
 devflow plan --context /path/to/context.json "request"
