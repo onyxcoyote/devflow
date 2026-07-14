@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from devflow.planning.nodes import create_plan_report, make_plan_node
+from devflow.planning.nodes import create_plan_report, make_plan_node, _plan_quality_issue
 from devflow.planning.schemas import (
     DevelopmentPlan,
     PLAN_SCHEMA_VERSION,
@@ -18,6 +18,22 @@ class FakeLogger:
 
     def error(self, *args):
         pass
+
+
+class PlanQualityTests(unittest.TestCase):
+    def test_ready_plan_cannot_defer_known_decision(self):
+        plan = {
+            "status": "ready",
+            "design_summary": "Implement the selected flow.",
+            "outstanding_items": [],
+            "decisions": [],
+            "proposed_changes": [{
+                "change": "Consider whether to read from snapshots or live statistics.",
+                "reason": "Either source might work.",
+            }],
+        }
+        issue = _plan_quality_issue(plan)
+        self.assertIn("defers a known decision", issue)
 
 
 class FakeCompletion:

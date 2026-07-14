@@ -43,6 +43,33 @@ def _plan_quality_issue(plan: dict) -> str | None:
             f"status={plan['status']} requires concrete proposed_changes; "
             "provide the recommended implementation path even when a user decision remains"
         )
+    if plan["status"] == "ready":
+        if plan.get("outstanding_items"):
+            return "status=ready cannot contain outstanding_items"
+        unresolved = [
+            item.get("question", "") for item in plan.get("decisions", [])
+            if item.get("status") == "unresolved"
+        ]
+        if unresolved:
+            return "status=ready cannot contain unresolved decisions: " + "; ".join(unresolved)
+        deferred_phrases = (
+            "consider whether", "decide whether", "determine whether", "choose between",
+            "either approach", "a or b",
+        )
+        decision_texts = [plan.get("design_summary", "")]
+        for change in plan.get("proposed_changes", []):
+            decision_texts.extend([change.get("change", ""), change.get("reason", "")])
+        for decision in plan.get("decisions", []):
+            decision_texts.extend([decision.get("decision", ""), decision.get("rationale", "")])
+        deferred = next(
+            (phrase for text in decision_texts for phrase in deferred_phrases if phrase in text.lower()),
+            None,
+        )
+        if deferred:
+            return (
+                f"status=ready defers a known decision using '{deferred}'; choose and justify an "
+                "approach, request specific repository context, or request a user decision"
+            )
     return None
 
 

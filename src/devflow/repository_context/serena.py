@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import traceback
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
@@ -28,6 +29,7 @@ READ_ONLY_SERENA_TOOLS = {
 }
 
 GENERATED_ARTIFACT_PATH = re.compile(r"(^|[\\/])\.devflow([\\/]|$)")
+ROUND_EXTENSION_CALLS = 6
 
 
 SERENA_SCHEMA_VERSION = "portable-v1"
@@ -174,7 +176,8 @@ def _confirm_additional_context_round(
     report: dict[str, Any],
     *,
     auto_approve: bool,
-) -> bool:
+    review_path: Path | None = None,
+) -> str:
     gaps = [
         item for item in report.get("missing_context", [])
         if item.get("kind") == "repository"
@@ -184,12 +187,46 @@ def _confirm_additional_context_round(
         print(f"  {index}. {item.get('description', '')}")
     if auto_approve:
         print("Additional context round auto-approved")
-        return True
+        return "continue"
     if not sys.stdin.isatty():
         print("Additional context round declined: stdin is not interactive")
-        return False
-    answer = input("Run another Serena context round for these gaps? [y/N]: ")
-    return answer.strip().lower() in {"y", "yes"}
+        return "stop"
+    while True:
+        answer = input(
+            "[C]ontinue context research, add a research [H]int, [O]pen context for "
+            "human review, [P]roceed anyway to planning, or [S]top? [S]: "
+        ).strip().lower()
+        choice = {
+            "c": "continue", "continue": "continue",
+            "h": "hint", "hint": "hint",
+            "o": "open", "open": "open",
+            "p": "proceed", "proceed": "proceed",
+            "s": "stop", "stop": "stop", "": "stop",
+        }.get(answer)
+        if choice == "open":
+            if review_path is not None:
+                review_path.write_text(
+                    json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+                print(f"Context review: {review_path.resolve()}")
+                try:
+                    subprocess.Popen(["xdg-open", str(review_path.resolve())])
+                except OSError:
+                    webbrowser.open(review_path.resolve().as_uri())
+            continue
+        if choice == "hint":
+            for item in gaps:
+                hint = input(
+                    f"Optional search hint for: {item.get('description', '')}\n> "
+                ).strip()
+                if hint:
+                    item["suggested_action"] = (
+                        item.get("suggested_action", "")
+                        + f" User search hint (not evidence): {hint}"
+                    )
+            return "continue"
+        if choice:
+            return choice
 
 
 def _print_context_progress(report: dict[str, Any]) -> None:
@@ -213,6 +250,41 @@ def _print_context_progress(report: dict[str, Any]) -> None:
             print(f"  Inspected: {', '.join(checkpoint['sources_inspected'])}")
         if checkpoint.get("next_investigation"):
             print(f"  Next: {checkpoint['next_investigation']}")
+
+
+def _round_extension_choice(
+    events: list[dict[str, Any]],
+    transcript_path: Path,
+    *,
+    auto_approve: bool,
+) -> str:
+    if auto_approve:
+        return "extend"
+    if not sys.stdin.isatty():
+        return "report"
+    while True:
+        answer = input(
+            "Soft round limit reached while Serena is still researching. "
+            "[E]xtend by 6 calls, create [R]eport now, [O]pen transcript, or [S]top? [R]: "
+        ).strip().lower()
+        choice = {
+            "e": "extend", "extend": "extend",
+            "r": "report", "report": "report", "": "report",
+            "o": "open", "open": "open",
+            "s": "stop", "stop": "stop",
+        }.get(answer)
+        if choice == "open":
+            transcript_path.write_text(
+                json.dumps(events, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            print(f"Live transcript: {transcript_path.resolve()}")
+            try:
+                subprocess.Popen(["xdg-open", str(transcript_path.resolve())])
+            except OSError:
+                webbrowser.open(transcript_path.resolve().as_uri())
+            continue
+        if choice:
+            return choice
 
 
 def _langchain_tools(mcp_tools) -> list[dict[str, Any]]:
@@ -365,8 +437,11 @@ async def _explore_round(
     prior_report: dict[str, Any] | None,
     executed_signatures: set[str],
     tool_call_budget: int,
+    max_tool_call_budget: int,
     is_final_round: bool,
     active_questions: list[str] | None = None,
+    auto_approve: bool = False,
+    live_transcript_path: Path | None = None,
 ):
     try:
         from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -395,8 +470,11 @@ async def _explore_round(
     ]
     events: list[dict[str, Any]] = []
     calls_attempted = 0
+    active_budget = tool_call_budget
+    stop_round = False
+    live_transcript_path = live_transcript_path or Path("serena-live-transcript.json")
 
-    while calls_attempted < tool_call_budget:
+    while calls_attempted < max_tool_call_budget and not stop_round:
         purpose = (
             f"Choose repository searches (round {round_number})"
             if not events
@@ -408,8 +486,29 @@ async def _explore_round(
         if not tool_calls:
             events.append({"assistant_summary": str(response.content)})
             break
-        for call in tool_calls:
-            if calls_attempted >= tool_call_budget:
+        for call_index, call in enumerate(tool_calls):
+            while calls_attempted >= active_budget and active_budget < max_tool_call_budget:
+                choice = _round_extension_choice(
+                    events, live_transcript_path, auto_approve=auto_approve
+                )
+                if choice == "extend":
+                    active_budget = min(
+                        active_budget + ROUND_EXTENSION_CALLS,
+                        max_tool_call_budget,
+                    )
+                    print(f"Extended current context round to {active_budget} tool calls")
+                    break
+                stop_round = True
+                break
+            if stop_round or calls_attempted >= active_budget:
+                events.append({
+                    "round": round_number,
+                    "pending_tool_calls": [
+                        {"tool": pending.get("name"), "arguments": pending.get("args", {})}
+                        for pending in tool_calls[call_index:]
+                    ],
+                    "reason": "round_limit_not_extended",
+                })
                 break
             name = call["name"]
             if name not in READ_ONLY_SERENA_TOOLS:
@@ -469,7 +568,25 @@ async def _explore_round(
                 tool_call_id=call["id"],
             ))
             calls_attempted += 1
+        if stop_round:
+            break
+        if calls_attempted >= active_budget and active_budget < max_tool_call_budget:
+            choice = _round_extension_choice(
+                events, live_transcript_path, auto_approve=auto_approve
+            )
+            if choice == "extend":
+                active_budget = min(
+                    active_budget + ROUND_EXTENSION_CALLS,
+                    max_tool_call_budget,
+                )
+                print(f"Extended current context round to {active_budget} tool calls")
+            else:
+                break
 
+    live_transcript_path.write_text(
+        json.dumps(events, indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
     structured_report_model = report_model.with_structured_output(
         SerenaContextReport,
         method=SERENA_STRUCTURED_OUTPUT_METHOD,
@@ -561,6 +678,7 @@ async def _explore_with_session(
     active_questions: list[str] | None = None,
     gate_between_rounds: bool = False,
     auto_approve: bool = False,
+    live_transcript_path: Path | None = None,
 ):
     try:
         from devflow.code_review.models import get_code_review_model
@@ -609,8 +727,11 @@ async def _explore_with_session(
             prior_report=report,
             executed_signatures=executed_signatures,
             tool_call_budget=round_budget,
+            max_tool_call_budget=remaining,
             is_final_round=is_final_round,
             active_questions=active_questions,
+            auto_approve=auto_approve,
+            live_transcript_path=live_transcript_path,
         )
         total_tool_calls += calls
         all_events.extend(events)
@@ -628,10 +749,19 @@ async def _explore_with_session(
             config=config,
         )
         if continue_rounds and gate_between_rounds:
-            continue_rounds = _confirm_additional_context_round(
+            round_action = _confirm_additional_context_round(
                 report,
                 auto_approve=auto_approve,
+                review_path=(
+                    live_transcript_path.with_name(f"context-review-round-{round_number}.json")
+                    if live_transcript_path is not None else None
+                ),
             )
+            if round_action == "proceed":
+                report["context_control"] = {"proceed_anyway": True}
+            elif round_action == "stop":
+                report["context_control"] = {"stop_requested": True}
+            continue_rounds = round_action == "continue"
         if not continue_rounds:
             break
 
@@ -657,6 +787,7 @@ async def _run_serena(
     active_questions: list[str] | None = None,
     gate_between_rounds: bool = False,
     auto_approve: bool = False,
+    live_transcript_path: Path | None = None,
 ):
     try:
         from mcp import ClientSession, StdioServerParameters
@@ -678,6 +809,7 @@ async def _run_serena(
                 active_questions=active_questions,
                 gate_between_rounds=gate_between_rounds,
                 auto_approve=auto_approve,
+                live_transcript_path=live_transcript_path,
             )
 
 
@@ -712,6 +844,7 @@ def run_serena_context(
                 active_questions=active_questions,
                 gate_between_rounds=gate_between_rounds,
                 auto_approve=auto_approve,
+                live_transcript_path=run_dir / "serena-live-transcript.json",
             ))
     except Exception as error:
         diagnostic_path = run_dir / "serena-error.json"

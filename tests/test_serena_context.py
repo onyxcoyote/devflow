@@ -203,7 +203,7 @@ class SerenaContinuationTests(unittest.TestCase):
                 auto_approve=True,
             )
 
-        self.assertTrue(approved)
+        self.assertEqual(approved, "continue")
         rendered = "\n".join(call.args[0] for call in output.call_args_list)
         self.assertIn("Find Schema X", rendered)
         self.assertNotIn("Choose compatibility", rendered)
