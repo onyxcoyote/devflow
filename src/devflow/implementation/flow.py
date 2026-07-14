@@ -18,6 +18,17 @@ from .schemas import ImplementationProposal
 MAX_SOURCE_CHARS = 80_000
 
 
+class ReplacementValidationError(ValueError):
+    def __init__(self, message: str, details: dict):
+        super().__init__(message)
+        self.details = details
+
+
+def _text_preview(value: str, limit: int = 240) -> str:
+    escaped = value.replace("\r", "\\r").replace("\n", "\\n")
+    return escaped[:limit] + ("..." if len(escaped) > limit else "")
+
+
 def _confirm(prompt: str, auto_approve: bool) -> bool:
     if auto_approve:
         return True
@@ -68,10 +79,14 @@ def _planned_sources(plan: dict, repo_path: str) -> tuple[list[str], dict[str, s
 def _validate_replacements(proposal: dict, planned_paths: list[str], repo_path: str) -> None:
     root = Path(repo_path).resolve()
     simulated: dict[str, str | None] = {}
-    for edit in proposal["replacements"]:
+    edits_applied_by_path: dict[str, int] = {}
+    for edit_index, edit in enumerate(proposal["replacements"], start=1):
         path = edit["path"]
         if path not in planned_paths:
-            raise ValueError(f"Model proposed an unplanned file: {path}")
+            raise ReplacementValidationError(
+                f"Edit {edit_index} proposed an unplanned file: {path}",
+                {"edit_index": edit_index, "path": path, "reason": "unplanned_path"},
+            )
         candidate = (root / path).resolve()
         candidate.relative_to(root)
         old = edit["old_text"]
@@ -84,16 +99,36 @@ def _validate_replacements(proposal: dict, planned_paths: list[str], repo_path: 
         content = simulated[path]
         if content is not None:
             if not old:
-                raise ValueError(f"Existing file requires non-empty old_text: {path}")
-            if content.count(old) != 1:
-                raise ValueError(
-                    f"old_text must match exactly once at this edit step in {path}"
+                raise ReplacementValidationError(
+                    f"Edit {edit_index} has empty old_text for existing file {path}",
+                    {"edit_index": edit_index, "path": path, "reason": "empty_old_text"},
+                )
+            match_count = content.count(old)
+            if match_count != 1:
+                details = {
+                    "edit_index": edit_index,
+                    "path": path,
+                    "reason": "old_text_match_count",
+                    "match_count": match_count,
+                    "prior_edits_in_file": edits_applied_by_path.get(path, 0),
+                    "old_text": old,
+                    "old_text_preview": _text_preview(old),
+                }
+                raise ReplacementValidationError(
+                    f"Edit {edit_index} old_text matched {match_count} times in {path} "
+                    f"after {details['prior_edits_in_file']} prior edit(s); expected exactly 1. "
+                    f"old_text={details['old_text_preview']!r}",
+                    details,
                 )
             simulated[path] = content.replace(old, edit["new_text"], 1)
         elif old:
-            raise ValueError(f"New file must use empty old_text: {path}")
+            raise ReplacementValidationError(
+                f"Edit {edit_index} uses old_text for new file {path}",
+                {"edit_index": edit_index, "path": path, "reason": "new_file_old_text"},
+            )
         else:
             simulated[path] = edit["new_text"]
+        edits_applied_by_path[path] = edits_applied_by_path.get(path, 0) + 1
 
 
 def _apply_replacements(proposal: dict, repo_path: str) -> None:
@@ -124,7 +159,9 @@ def implementation_flow(
         "Inspect the supplied bounded source before editing. Preserve existing behavior unless "
         "the plan changes it. If implementation reveals a material product, compatibility, "
         "security, data, or architecture decision, return needs_user_decision with no edits. "
-        "Record non-material departures in deviations. Do not use placeholders.\n\n"
+        "Record non-material departures in deviations. Do not use placeholders. Copy old_text "
+        "verbatim from the supplied source, include enough surrounding text to make it unique, "
+        "and order same-file edits so each old_text exists after earlier edits.\n\n"
         f"PLAN\n{json.dumps(plan, indent=2)}\n\n"
         f"PLANNED SOURCES\n{json.dumps(sources, indent=2)}"
     )
@@ -133,11 +170,38 @@ def implementation_flow(
         ImplementationProposal,
         method="function_calling",
     )
-    logger.info("Requesting implementation proposal for %d planned files", len(planned_paths))
-    proposal = structured.invoke(prompt).model_dump()
-
     run_dir = Path(config.repo_path) / ".devflow" / "implementations" / "runs" / datetime.now().strftime("%Y-%m-%d_%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=False)
+    logger.info("Requesting implementation proposal for %d planned files", len(planned_paths))
+    proposal = None
+    validation_error = None
+    attempt_prompt = prompt
+    for attempt in (1, 2):
+        proposal = structured.invoke(attempt_prompt).model_dump()
+        attempt_path = run_dir / f"proposal-attempt-{attempt}.json"
+        attempt_path.write_text(json.dumps(proposal, indent=2), encoding="utf-8")
+        if proposal["status"] != "ready" or not proposal["replacements"]:
+            validation_error = None
+            break
+        try:
+            _validate_replacements(proposal, planned_paths, config.repo_path)
+            validation_error = None
+            break
+        except ReplacementValidationError as error:
+            validation_error = error
+            logger.warning("Implementation proposal attempt %d is not applicable: %s", attempt, error)
+            print(f"Implementation proposal attempt {attempt} failed validation: {error}")
+            if attempt == 1:
+                attempt_prompt = (
+                    "Repair the implementation proposal below. The repository has not been "
+                    "modified. Return the complete proposal again. Correct the exact replacement "
+                    "identified by the deterministic validator; do not broaden scope.\n\n"
+                    f"VALIDATION ERROR\n{json.dumps(error.details, indent=2)}\n\n"
+                    f"FAILED PROPOSAL\n{json.dumps(proposal, indent=2)}\n\n"
+                    + prompt
+                )
+
+    assert proposal is not None
     proposal_path = run_dir / "proposal.json"
     proposal_path.write_text(json.dumps(proposal, indent=2), encoding="utf-8")
     print(f"Implementation proposal: {proposal_path.resolve()}")
@@ -149,8 +213,18 @@ def implementation_flow(
 
     applied = False
     command_results = []
-    if proposal["status"] == "ready" and proposal["replacements"]:
-        _validate_replacements(proposal, planned_paths, config.repo_path)
+    diagnostic_path = None
+    if validation_error is not None:
+        diagnostic_path = run_dir / "validation-error.json"
+        diagnostic_path.write_text(json.dumps({
+            "message": str(validation_error),
+            "details": validation_error.details,
+            "proposal": str(proposal_path.resolve()),
+            "attempts": 2,
+        }, indent=2), encoding="utf-8")
+        print("Implementation stopped: repaired proposal still cannot be applied safely.")
+        print(f"Validation diagnostic: {diagnostic_path.resolve()}")
+    elif proposal["status"] == "ready" and proposal["replacements"]:
         if _confirm("Apply this implementation proposal?", auto_approve):
             _apply_replacements(proposal, config.repo_path)
             applied = True
@@ -166,6 +240,10 @@ def implementation_flow(
         "proposal_status": proposal["status"],
         "applied": applied,
         "command_results": command_results,
+        "validation_error": (
+            {"message": str(validation_error), "details": validation_error.details}
+            if validation_error is not None else None
+        ),
         "git_diff": subprocess.run(
             ["git", "diff", "--no-ext-diff", "--"], cwd=config.repo_path,
             capture_output=True, text=True, check=True,
@@ -173,7 +251,10 @@ def implementation_flow(
     }
     evidence_path = run_dir / "evidence.json"
     evidence_path.write_text(json.dumps(evidence, indent=2), encoding="utf-8")
-    return {"proposal": proposal, "applied": applied, "paths": {
+    paths = {
         "proposal": str(proposal_path.resolve()),
         "evidence": str(evidence_path.resolve()),
-    }}
+    }
+    if diagnostic_path is not None:
+        paths["validation_error"] = str(diagnostic_path.resolve())
+    return {"proposal": proposal, "applied": applied, "paths": paths}

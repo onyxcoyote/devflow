@@ -7,6 +7,7 @@ try:
         _apply_replacements,
         _planned_sources,
         _validate_replacements,
+        ReplacementValidationError,
     )
 except ModuleNotFoundError as error:
     if error.name == "prefect":
@@ -60,3 +61,21 @@ class ImplementationEditTests(unittest.TestCase):
                 target.read_text(encoding="utf-8"),
                 "first = True\nsecond = True\n",
             )
+
+    def test_match_error_identifies_edit_count_and_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "feature.py"
+            target.write_text("value = False\nvalue = False\n", encoding="utf-8")
+            proposal = {"replacements": [{
+                "path": "feature.py",
+                "old_text": "value = False",
+                "new_text": "value = True",
+                "reason": "",
+            }]}
+
+            with self.assertRaises(ReplacementValidationError) as raised:
+                _validate_replacements(proposal, ["feature.py"], temp_dir)
+
+            self.assertEqual(raised.exception.details["edit_index"], 1)
+            self.assertEqual(raised.exception.details["match_count"], 2)
+            self.assertIn("matched 2 times", str(raised.exception))
