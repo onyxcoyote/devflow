@@ -3,6 +3,8 @@ import tempfile
 from pathlib import Path
 
 from devflow.planning.research import (
+    apply_user_answers_to_context,
+    context_user_questions,
     normalize_supplemental_report,
     read_context_approved_files,
     question_key,
@@ -39,6 +41,28 @@ class PlanningFlowTests(unittest.TestCase):
         item = {"kind": "user_decision", "question": "Preserve compatibility?"}
         plan = {"status": "needs_user_decision", "outstanding_items": [item]}
         self.assertEqual(user_decision_questions(plan), [item])
+
+    def test_context_user_answer_resolves_before_planning(self):
+        report = {
+            "status": "needs_user_decision",
+            "missing_context": [{
+                "kind": "user_decision",
+                "description": "Preserve compatibility?",
+                "suggested_action": "Choose compatibility behavior.",
+            }],
+            "question_resolutions": [],
+        }
+        self.assertEqual(
+            context_user_questions(report)[0]["question"],
+            "Preserve compatibility?",
+        )
+        apply_user_answers_to_context(report, [{
+            "question": "Preserve compatibility?",
+            "answer": "Yes, preserve it.",
+        }])
+        self.assertEqual(report["status"], "sufficient")
+        self.assertEqual(report["missing_context"], [])
+        self.assertEqual(report["question_resolutions"][0]["source"], "user input")
 
     def test_builds_targeted_supplemental_request(self):
         result = supplemental_context_request(

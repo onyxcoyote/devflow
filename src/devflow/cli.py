@@ -318,6 +318,9 @@ def _run_plan(args: argparse.Namespace) -> int:
             context_path = context_source.get("context") or context_source.get("context_path")
             if context_path:
                 print(f"Context: {context_path}")
+            if result.get("user_input_path"):
+                print(f"User input: {result['user_input_path']}")
+                print("Fill in the answers and rerun plan with --answers.")
             return 0
         plan = result["plan"]
         print()

@@ -43,3 +43,20 @@ class ImplementationEditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             with self.assertRaisesRegex(ValueError, "unplanned file"):
                 _validate_replacements(proposal, ["planned.py"], temp_dir)
+
+    def test_allows_ordered_replacements_in_same_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "feature.py"
+            target.write_text("first = False\nsecond = False\n", encoding="utf-8")
+            proposal = {"replacements": [
+                {"path": "feature.py", "old_text": "first = False", "new_text": "first = True", "reason": ""},
+                {"path": "feature.py", "old_text": "second = False", "new_text": "second = True", "reason": ""},
+            ]}
+
+            _validate_replacements(proposal, ["feature.py"], temp_dir)
+            _apply_replacements(proposal, temp_dir)
+
+            self.assertEqual(
+                target.read_text(encoding="utf-8"),
+                "first = True\nsecond = True\n",
+            )

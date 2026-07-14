@@ -32,6 +32,48 @@ def user_decision_questions(plan: dict) -> list[dict[str, str]]:
     ]
 
 
+def context_user_questions(report: dict) -> list[dict[str, str]]:
+    return [
+        {
+            "question": item.get("description", ""),
+            "impact": item.get("suggested_action", ""),
+        }
+        for item in report.get("missing_context", [])
+        if item.get("kind") == "user_decision" and item.get("description")
+    ]
+
+
+def apply_user_answers_to_context(
+    report: dict,
+    answers: list[dict[str, str]],
+) -> None:
+    answer_by_key = {
+        question_key(item["question"]): item["answer"] for item in answers
+    }
+    unresolved = []
+    for item in report.get("missing_context", []):
+        key = question_key(item.get("description", ""))
+        answer = answer_by_key.get(key)
+        if item.get("kind") == "user_decision" and answer:
+            report.setdefault("question_resolutions", []).append({
+                "question": item["description"],
+                "resolution": answer,
+                "source": "user input",
+            })
+        else:
+            unresolved.append(item)
+    report["missing_context"] = unresolved
+    report.setdefault("user_answers", []).extend(answers)
+    if report.get("status") == "needs_user_decision" and not any(
+        item.get("kind") == "user_decision" for item in unresolved
+    ):
+        report["status"] = (
+            "needs_repository_context"
+            if any(item.get("kind") == "repository" for item in unresolved)
+            else "sufficient"
+        )
+
+
 def question_key(question: str) -> str:
     return " ".join(question.lower().split()).rstrip("?.!")
 

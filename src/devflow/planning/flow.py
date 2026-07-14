@@ -12,6 +12,8 @@ from .config import PlanningConfig
 from .artifacts import load_context_artifact, load_previous_plan
 from .research import (
     MAX_SUPPLEMENTAL_CONTEXT_ROUNDS,
+    apply_user_answers_to_context,
+    context_user_questions,
     normalize_supplemental_report,
     question_key,
     read_context_approved_files,
@@ -213,10 +215,30 @@ def planning_flow(
     context_source.setdefault("supplemental_rounds", [])
     supplied_answers = _load_user_answers(answers_path)
     if supplied_answers:
-        repository_context.setdefault("user_answers", []).extend(supplied_answers)
+        apply_user_answers_to_context(repository_context, supplied_answers)
         context_source["user_answers_path"] = str(Path(answers_path).resolve())
 
     _log_initial_context(repository_context, context_source, logger)
+    context_questions = context_user_questions(repository_context)
+    if context_questions:
+        answers, user_input_path = _collect_user_answers(
+            context_questions,
+            auto_approve=auto_approve,
+            run_dir=run_dir,
+            logger=logger,
+        )
+        if answers:
+            apply_user_answers_to_context(repository_context, answers)
+        if user_input_path is not None:
+            logger.info("Planning stopped for unresolved context-level user decisions")
+            return {
+                "stopped": True,
+                "reason": "context_user_decision_deferred",
+                "context_source": context_source,
+                "repository_context": repository_context,
+                "user_input_path": user_input_path,
+            }
+        _log_initial_context(repository_context, context_source, logger)
     if not _confirm(
         "Proceed to planning with this repository context?",
         auto_approve=auto_approve,

@@ -67,25 +67,33 @@ def _planned_sources(plan: dict, repo_path: str) -> tuple[list[str], dict[str, s
 
 def _validate_replacements(proposal: dict, planned_paths: list[str], repo_path: str) -> None:
     root = Path(repo_path).resolve()
-    seen = set()
+    simulated: dict[str, str | None] = {}
     for edit in proposal["replacements"]:
         path = edit["path"]
-        if path in seen:
-            raise ValueError(f"Only one replacement per file is supported: {path}")
-        seen.add(path)
         if path not in planned_paths:
             raise ValueError(f"Model proposed an unplanned file: {path}")
         candidate = (root / path).resolve()
         candidate.relative_to(root)
         old = edit["old_text"]
-        if candidate.exists():
-            content = candidate.read_text(encoding="utf-8")
+        if path not in simulated:
+            simulated[path] = (
+                candidate.read_text(encoding="utf-8")
+                if candidate.exists()
+                else None
+            )
+        content = simulated[path]
+        if content is not None:
             if not old:
                 raise ValueError(f"Existing file requires non-empty old_text: {path}")
             if content.count(old) != 1:
-                raise ValueError(f"old_text must match exactly once in {path}")
+                raise ValueError(
+                    f"old_text must match exactly once at this edit step in {path}"
+                )
+            simulated[path] = content.replace(old, edit["new_text"], 1)
         elif old:
             raise ValueError(f"New file must use empty old_text: {path}")
+        else:
+            simulated[path] = edit["new_text"]
 
 
 def _apply_replacements(proposal: dict, repo_path: str) -> None:
