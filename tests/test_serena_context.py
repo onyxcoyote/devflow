@@ -19,6 +19,7 @@ from devflow.repository_context.serena import (
     _should_continue,
     _tool_result_text,
     _ModelRequestLimiter,
+    _confirm_additional_context_round,
     _references_generated_artifacts,
     run_serena_context,
 )
@@ -188,6 +189,22 @@ class SerenaContinuationTests(unittest.TestCase):
 
         self.assertIn("repository-answerable gaps", instruction)
         self.assertIn("user decisions", instruction)
+
+    def test_round_gate_displays_only_repository_gaps(self):
+        report = {"missing_context": [
+            {"kind": "repository", "description": "Find Schema X."},
+            {"kind": "user_decision", "description": "Choose compatibility."},
+        ]}
+        with patch("builtins.print") as output:
+            approved = _confirm_additional_context_round(
+                report,
+                auto_approve=True,
+            )
+
+        self.assertTrue(approved)
+        rendered = "\n".join(call.args[0] for call in output.call_args_list)
+        self.assertIn("Find Schema X", rendered)
+        self.assertNotIn("Choose compatibility", rendered)
 
 
 class SerenaModelRequestLimiterTests(unittest.IsolatedAsyncioTestCase):

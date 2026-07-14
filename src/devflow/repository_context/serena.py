@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import subprocess
+import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -145,6 +146,28 @@ class _ModelRequestLimiter:
         except Exception as error:
             print(f"LLM ERROR ({purpose}): {type(error).__name__}: {error}")
             raise
+
+
+def _confirm_additional_context_round(
+    report: dict[str, Any],
+    *,
+    auto_approve: bool,
+) -> bool:
+    gaps = [
+        item for item in report.get("missing_context", [])
+        if item.get("kind") == "repository"
+    ]
+    print("Repository gaps requesting another context round:")
+    for index, item in enumerate(gaps, start=1):
+        print(f"  {index}. {item.get('description', '')}")
+    if auto_approve:
+        print("Additional context round auto-approved")
+        return True
+    if not sys.stdin.isatty():
+        print("Additional context round declined: stdin is not interactive")
+        return False
+    answer = input("Run another Serena context round for these gaps? [y/N]: ")
+    return answer.strip().lower() in {"y", "yes"}
 
 
 def _langchain_tools(mcp_tools) -> list[dict[str, Any]]:
@@ -487,6 +510,8 @@ async def _explore_with_session(
     *,
     initial_report: dict[str, Any] | None = None,
     active_questions: list[str] | None = None,
+    gate_between_rounds: bool = False,
+    auto_approve: bool = False,
 ):
     try:
         from devflow.code_review.models import get_code_review_model
@@ -546,12 +571,18 @@ async def _explore_with_session(
             f"Round {round_number}: {calls} tool calls "
             f"({total_tool_calls}/{config.max_total_tool_calls} total)"
         )
-        if not _should_continue(
+        continue_rounds = _should_continue(
             report,
             round_number=round_number,
             total_tool_calls=total_tool_calls,
             config=config,
-        ):
+        )
+        if continue_rounds and gate_between_rounds:
+            continue_rounds = _confirm_additional_context_round(
+                report,
+                auto_approve=auto_approve,
+            )
+        if not continue_rounds:
             break
 
     if report is None:
@@ -574,6 +605,8 @@ async def _run_serena(
     *,
     initial_report: dict[str, Any] | None = None,
     active_questions: list[str] | None = None,
+    gate_between_rounds: bool = False,
+    auto_approve: bool = False,
 ):
     try:
         from mcp import ClientSession, StdioServerParameters
@@ -593,6 +626,8 @@ async def _run_serena(
                 session,
                 initial_report=initial_report,
                 active_questions=active_questions,
+                gate_between_rounds=gate_between_rounds,
+                auto_approve=auto_approve,
             )
 
 
@@ -602,6 +637,8 @@ def run_serena_context(
     *,
     initial_report: dict[str, Any] | None = None,
     active_questions: list[str] | None = None,
+    gate_between_rounds: bool = False,
+    auto_approve: bool = False,
 ) -> dict[str, Any]:
     root = Path(config.output_dir)
     run_dir = root / "runs" / datetime.now().strftime("%Y-%m-%d_%H%M%S")
@@ -623,6 +660,8 @@ def run_serena_context(
                 stderr_log,
                 initial_report=initial_report,
                 active_questions=active_questions,
+                gate_between_rounds=gate_between_rounds,
+                auto_approve=auto_approve,
             ))
     except Exception as error:
         diagnostic_path = run_dir / "serena-error.json"

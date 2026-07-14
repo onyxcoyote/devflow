@@ -295,6 +295,14 @@ def _run_plan(args: argparse.Namespace) -> int:
             )
         except SerenaContextRunError as error:
             return _handle_serena_error(error)
+        if result.get("stopped"):
+            print()
+            print("PLANNING STOPPED: repository context was preserved")
+            context_source = result.get("context_source", {})
+            context_path = context_source.get("context") or context_source.get("context_path")
+            if context_path:
+                print(f"Context: {context_path}")
+            return 0
         plan = result["plan"]
         print()
         print(f"DEVELOPMENT PLAN: {plan['status'].upper()}")
@@ -319,7 +327,12 @@ def _run_serena_context(args: argparse.Namespace) -> int:
     )
     _print_resolved_config(config)
     try:
-        result = serena_context_flow(args.request, config)
+        result = serena_context_flow(
+            args.request,
+            config,
+            gate_between_rounds=True,
+            auto_approve=False,
+        )
     except SerenaContextRunError as error:
         return _handle_serena_error(error)
     report = result["report"]

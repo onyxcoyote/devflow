@@ -92,6 +92,22 @@ def _log_supplemental_answers(report: dict, logger) -> None:
         )
 
 
+def _log_initial_context(report: dict, context_source: dict, logger) -> None:
+    files = report.get("relevant_files", [])
+    missing = report.get("missing_context", [])
+    logger.info("Initial repository context: status=%s", report.get("status", "unknown"))
+    logger.info("Initial context relevant files (%d)", len(files))
+    for item in files:
+        logger.info("  %s: %s", item.get("role", "unknown"), item.get("path", ""))
+    if missing:
+        logger.info("Initial context unresolved items (%d)", len(missing))
+        for item in missing:
+            logger.info("  %s: %s", item.get("kind", "unknown"), item.get("description", ""))
+    artifact = context_source.get("context") or context_source.get("context_path")
+    if artifact:
+        logger.info("Initial context artifact: %s", artifact)
+
+
 @flow(name="development-plan")
 def planning_flow(
     request: str,
@@ -119,7 +135,12 @@ def planning_flow(
                 "repository facts needed to confirm, correct, or complete it:\n"
                 + json.dumps(previous_plan, ensure_ascii=False)
             )
-        context_result = serena_context_flow(discovery_request, serena_config)
+        context_result = serena_context_flow(
+            discovery_request,
+            serena_config,
+            gate_between_rounds=True,
+            auto_approve=auto_approve,
+        )
         repository_context = context_result["report"]
         context_source = {
             "mode": "generated",
@@ -132,6 +153,28 @@ def planning_flow(
         repository_context = {"initial": repository_context}
     repository_context.setdefault("supplemental_rounds", [])
     context_source.setdefault("supplemental_rounds", [])
+
+    _log_initial_context(repository_context, context_source, logger)
+    if not _confirm(
+        "Proceed to planning with this repository context?",
+        auto_approve=auto_approve,
+        logger=logger,
+    ):
+        context_source.setdefault("human_gates", []).append({
+            "gate": "initial_context_to_plan",
+            "approved": False,
+        })
+        logger.info("Planning stopped by user after initial context")
+        return {
+            "stopped": True,
+            "reason": "initial_context_not_approved",
+            "context_source": context_source,
+            "repository_context": repository_context,
+        }
+    context_source.setdefault("human_gates", []).append({
+        "gate": "initial_context_to_plan",
+        "approved": True,
+    })
 
     final_state = run_planning_graph(
         _planning_state(

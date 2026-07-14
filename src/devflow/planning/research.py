@@ -6,7 +6,7 @@ from pathlib import Path
 from devflow.repository_context.config import SerenaContextConfig
 
 
-MAX_SUPPLEMENTAL_CONTEXT_ROUNDS = 2
+MAX_SUPPLEMENTAL_CONTEXT_ROUNDS = 1
 MAX_SUPPLEMENTAL_TOOL_CALLS = 8
 MAX_PLANNER_FILES = 4
 MAX_PLANNER_FILE_CHARS = 12_000
