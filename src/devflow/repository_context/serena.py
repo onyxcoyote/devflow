@@ -97,6 +97,44 @@ class ResearchCheckpoint(SerenaSchema):
     )
 
 
+class ImpactStage(SerenaSchema):
+    stage: str = Field(description="Flow stage such as calculation, mapping, API, or persistence.")
+    path: str = Field(description="Repository-relative source path, or empty when unresolved.")
+    symbol: str = Field(description="Qualified symbol at this stage, or empty when unresolved.")
+    object_type: str = Field(description="Concrete qualified type at this stage, or empty.")
+    relationship: str = Field(description="How data or control reaches the next stage.")
+    status: Literal["resolved", "unresolved", "not_applicable"]
+
+
+class ImpactChain(SerenaSchema):
+    concept: str = Field(description="Changed field, behavior, type, or method being traced.")
+    stages: list[ImpactStage] = Field(description="Ordered upstream-to-downstream flow stages.")
+    affected_definitions: list[str] = Field(
+        description="Qualified path:symbol definitions affected; return [] if none."
+    )
+    callers: list[str] = Field(description="Affected callers as path:symbol; return [] if none.")
+    consumers: list[str] = Field(description="Affected consumers as path:symbol; return [] if none.")
+    persistence_effects: list[str] = Field(
+        description="Persistence and serialization consequences; return [] if none."
+    )
+    closure_gaps: list[str] = Field(
+        description="Material untraced portions of the flow; return [] only when impact is closed."
+    )
+
+
+class ArchitectureDecisionCandidate(SerenaSchema):
+    kind: Literal[
+        "persistence", "schema", "source_of_truth", "new_component", "public_api",
+        "compatibility", "security", "state_lifecycle",
+    ]
+    question: str
+    recommendation: str
+    alternatives: list[str] = Field(description="Credible alternatives; return [] if none.")
+    consequences: list[str] = Field(description="Important tradeoffs and effects.")
+    evidence: list[str] = Field(description="Supporting path:symbol evidence.")
+    affected_files: list[str] = Field(description="Repository-relative affected files.")
+
+
 class SerenaContextReport(SerenaSchema):
     status: Literal[
         "sufficient",
@@ -127,6 +165,12 @@ class SerenaContextReport(SerenaSchema):
             "Targeted supplemental research progress by subquestion; return [] for ordinary "
             "context discovery."
         )
+    )
+    impact_chains: list[ImpactChain] = Field(
+        description="Request-specific impact closure traces; return [] during broad discovery."
+    )
+    architecture_decisions: list[ArchitectureDecisionCandidate] = Field(
+        description="Material architecture changes requiring human confirmation; return [] if none."
     )
 
 
@@ -611,6 +655,16 @@ async def _explore_round(
             + json.dumps(active_questions, ensure_ascii=False)
             + "\n"
         )
+        if any("IMPACT CLOSURE" in question for question in active_questions):
+            supplemental_instruction += (
+                "\nPerform explicit impact closure. Trace each changed concept from origin or "
+                "calculation through concrete qualified object types, construction, mappings, "
+                "callers, consumers, API/serialization, and persistence. Populate impact_chains. "
+                "Do not mark a chain closed while a material stage is unknown. Put every closure "
+                "gap in missing_context. Populate architecture_decisions for persistence, schema, "
+                "source-of-truth, new-component, public-contract, compatibility, security, or "
+                "state-lifecycle choices.\n"
+            )
     report_prompt = (
         "Create an accumulated grounded repository-context report for the development request. "
         "Merge the prior report with this round, retaining useful earlier evidence. Include only "

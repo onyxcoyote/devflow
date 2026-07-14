@@ -10,9 +10,9 @@ from devflow.repository_context.config import SerenaContextConfig
 MAX_SUPPLEMENTAL_CONTEXT_ROUNDS = 3
 MAX_INITIAL_CONTEXT_REFINEMENT_ROUNDS = 3
 MAX_SUPPLEMENTAL_TOOL_CALLS = 8
-MAX_PLANNER_FILES = 4
-MAX_PLANNER_FILE_CHARS = 12_000
-MAX_PLANNER_SOURCE_CHARS = 36_000
+MAX_PLANNER_FILES = 8
+MAX_PLANNER_FILE_CHARS = 20_000
+MAX_PLANNER_SOURCE_CHARS = 100_000
 
 
 def repository_context_questions(plan: dict) -> list[dict[str, str]]:
@@ -109,6 +109,21 @@ def supplemental_context_request(
             f"   Suggested investigation: {item.get('suggested_action', '')}",
         ])
     return "\n".join(lines)
+
+
+def impact_context_request(request: str) -> tuple[str, list[dict[str, str]]]:
+    question = (
+        "IMPACT CLOSURE: Trace every changed concept required by this request from its origin or "
+        "calculation through concrete object types, construction, callers, mappings, consumers, "
+        "serialization/API boundaries, and persistence. Identify all affected definitions and "
+        "material architecture decisions."
+    )
+    questions = [{
+        "question": question,
+        "impact": "An incomplete impact chain can omit required files or change the wrong type.",
+        "suggested_action": "Follow qualified symbols and data/control flow until each chain closes.",
+    }]
+    return supplemental_context_request(request, questions, 1), questions
 
 
 def supplemental_prior_report(repository_context: dict) -> dict:
@@ -221,7 +236,10 @@ def supplemental_progress_signature(report: dict) -> tuple:
 
 def merge_context_refinement(context: dict, report: dict) -> None:
     """Merge a targeted report while making its unresolved set authoritative."""
-    for field in ("relevant_files", "relevant_symbols", "evidence", "question_resolutions"):
+    for field in (
+        "relevant_files", "relevant_symbols", "evidence", "question_resolutions",
+        "impact_chains", "architecture_decisions",
+    ):
         existing = context.setdefault(field, [])
         seen = {json.dumps(item, sort_keys=True, default=str) for item in existing}
         for item in report.get(field, []):

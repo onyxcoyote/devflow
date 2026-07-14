@@ -5,6 +5,7 @@ from pathlib import Path
 from devflow.planning.research import (
     apply_user_answers_to_context,
     context_user_questions,
+    impact_context_request,
     normalize_supplemental_report,
     merge_context_refinement,
     read_context_approved_files,
@@ -151,6 +152,12 @@ class PlanningFlowTests(unittest.TestCase):
         self.assertEqual(context["status"], "sufficient")
         self.assertEqual(context["missing_context"], [])
         self.assertEqual(context["evidence"][0]["source"], "combat.ts")
+
+    def test_impact_request_requires_end_to_end_closure(self):
+        request, questions = impact_context_request("Add history statistics.")
+        self.assertIn("IMPACT CLOSURE", request)
+        self.assertIn("concrete object types", questions[0]["question"])
+        self.assertIn("persistence", questions[0]["question"])
 
     def test_question_keys_ignore_case_spacing_and_terminal_punctuation(self):
         self.assertEqual(

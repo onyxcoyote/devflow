@@ -17,6 +17,7 @@ from .research import (
     MAX_INITIAL_CONTEXT_REFINEMENT_ROUNDS,
     apply_user_answers_to_context,
     context_user_questions,
+    impact_context_request,
     normalize_supplemental_report,
     merge_context_refinement,
     question_key,
@@ -351,6 +352,115 @@ def _load_user_answers(path: str | None) -> list[dict[str, str]]:
     ]
 
 
+def _run_impact_review(
+    request: str,
+    repository_context: dict,
+    context_source: dict,
+    serena_config: SerenaContextConfig,
+    logger,
+) -> None:
+    impact_request, questions = impact_context_request(request)
+    logger.info("Starting repository impact-closure review")
+    result = serena_context_flow(
+        impact_request,
+        supplemental_serena_config(serena_config),
+        initial_report=supplemental_prior_report(repository_context),
+        active_questions=[item["question"] for item in questions],
+    )
+    report = normalize_supplemental_report(result["report"], questions)
+    for chain in report.get("impact_chains", []):
+        for gap in chain.get("closure_gaps", []):
+            if not any(
+                question_key(item.get("description", "")) == question_key(gap)
+                for item in report.get("missing_context", [])
+            ):
+                report.setdefault("missing_context", []).append({
+                    "kind": "repository",
+                    "description": gap,
+                    "suggested_action": f"Complete impact closure for {chain.get('concept', 'concept')}.",
+                    "related_files": [],
+                    "related_symbols": chain.get("affected_definitions", []),
+                })
+    if any(item.get("kind") == "repository" for item in report.get("missing_context", [])):
+        report["status"] = "needs_repository_context"
+    _log_supplemental_answers(report, logger)
+    repository_context.setdefault("supplemental_rounds", []).append({
+        "phase": "impact_review", "round": 1, "questions": questions, "report": report,
+    })
+    context_source.setdefault("supplemental_rounds", []).append({
+        "phase": "impact_review", "round": 1, "paths": result.get("paths", {}),
+    })
+    merge_context_refinement(repository_context, report)
+
+
+def _architecture_decision_gate(
+    repository_context: dict,
+    *,
+    run_dir: str,
+    auto_approve: bool,
+    supplied_decisions: dict[str, str] | None = None,
+) -> tuple[str, str | None]:
+    decisions = repository_context.get("architecture_decisions", [])
+    if not decisions:
+        return "approved", None
+    approvals = []
+    supplied_decisions = supplied_decisions or {}
+    if all(question_key(item["question"]) in supplied_decisions for item in decisions):
+        repository_context["approved_architecture_decisions"] = [{
+            "question": item["question"],
+            "decision": supplied_decisions[question_key(item["question"])],
+            "kind": item["kind"],
+            "source": "human",
+        } for item in decisions]
+        return "approved", None
+    if auto_approve or not sys.stdin.isatty():
+        path = Path(run_dir) / "architecture-input.json"
+        path.write_text(json.dumps({
+            "decisions": [
+                {"question": item["question"], "decision": ""} for item in decisions
+            ]
+        }, indent=2), encoding="utf-8")
+        print(f"Architecture decisions require human review: {path.resolve()}")
+        return "stop", str(path.resolve())
+    for index, item in enumerate(decisions, start=1):
+        while True:
+            print(f"Architecture decision {index}/{len(decisions)} [{item['kind']}]")
+            print(f"  Question: {item['question']}")
+            print(f"  Recommended: {item['recommendation']}")
+            for alternative in item.get("alternatives", []):
+                print(f"  Alternative: {alternative}")
+            for consequence in item.get("consequences", []):
+                print(f"  Consequence: {consequence}")
+            answer = input(
+                "[A]pprove recommendation, [M]odify decision, [O]pen impact context, or [S]top? [S]: "
+            ).strip().lower()
+            if answer in {"o", "open"}:
+                _open_context_review(repository_context, run_dir)
+                continue
+            if answer in {"a", "approve"}:
+                decision = item["recommendation"]
+            elif answer in {"m", "modify"}:
+                decision = input("Enter the approved architecture decision:\n> ").strip()
+                if not decision:
+                    continue
+            else:
+                path = Path(run_dir) / "architecture-input.json"
+                path.write_text(json.dumps({"decisions": [
+                    {"question": remaining["question"], "decision": ""}
+                    for remaining in decisions[index - 1:]
+                ]}, indent=2), encoding="utf-8")
+                return "stop", str(path.resolve())
+            approvals.append({
+                "question": item["question"],
+                "decision": decision,
+                "kind": item["kind"],
+                "source": "human",
+            })
+            break
+    repository_context["approved_architecture_decisions"] = approvals
+    return "approved", None
+
+
 def _collect_user_answers(
     questions: list[dict[str, str]],
     *,
@@ -399,6 +509,7 @@ def planning_flow(
     auto_approve: bool = False,
     answers_path: str | None = None,
     context_hints_path: str | None = None,
+    architecture_decisions_path: str | None = None,
 ) -> dict:
     logger = get_run_logger()
     if run_dir is None:
@@ -440,6 +551,16 @@ def planning_flow(
     context_source.setdefault("supplemental_rounds", [])
     supplied_answers = _load_user_answers(answers_path)
     supplied_hints = _load_research_hints(context_hints_path)
+    supplied_architecture_decisions = {}
+    if architecture_decisions_path:
+        values = json.loads(
+            Path(architecture_decisions_path).expanduser().resolve().read_text(encoding="utf-8")
+        )
+        supplied_architecture_decisions = {
+            question_key(item["question"]): item["decision"]
+            for item in values.get("decisions", [])
+            if item.get("question") and item.get("decision")
+        }
     if supplied_answers:
         apply_user_answers_to_context(repository_context, supplied_answers)
         context_source["user_answers_path"] = str(Path(answers_path).resolve())
@@ -486,6 +607,43 @@ def planning_flow(
                 "user_input_path": user_input_path,
             }
         _log_initial_context(repository_context, context_source, logger)
+    _run_impact_review(
+        request, repository_context, context_source, serena_config, logger
+    )
+    impact_completion, impact_artifact = _refine_incomplete_context(
+        request,
+        repository_context,
+        context_source,
+        serena_config,
+        run_dir=run_dir,
+        auto_approve=auto_approve,
+        logger=logger,
+    )
+    if impact_completion == "stop":
+        return {
+            "stopped": True,
+            "reason": "impact_context_incomplete",
+            "context_source": context_source,
+            "repository_context": repository_context,
+            "context_input_path": impact_artifact,
+        }
+    architecture_status, architecture_path = _architecture_decision_gate(
+        repository_context,
+        run_dir=run_dir,
+        auto_approve=auto_approve,
+        supplied_decisions=supplied_architecture_decisions,
+    )
+    if architecture_status == "stop":
+        return {
+            "stopped": True,
+            "reason": "architecture_decision_required",
+            "context_source": context_source,
+            "repository_context": repository_context,
+            "architecture_input_path": architecture_path,
+        }
+    impact_path = Path(run_dir) / "impact-context.json"
+    impact_path.write_text(json.dumps(repository_context, indent=2), encoding="utf-8")
+    context_source["impact_context_path"] = str(impact_path.resolve())
     context_source.setdefault("human_gates", []).append({
         "gate": "initial_context_to_plan",
         "approved": True,

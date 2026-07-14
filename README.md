@@ -50,6 +50,12 @@ devflow plan \
 # Resume targeted context research after filling in context-input.json
 devflow plan --context-hints /path/to/context-input.json "request"
 
+# Resume after reviewing generated architecture-input.json
+devflow plan \
+  --architecture-decisions /path/to/architecture-input.json \
+  --context /path/to/context.json \
+  "request"
+
 # Propose edits from an approved plan, then ask before applying them
 devflow implement /path/to/plan.json
 

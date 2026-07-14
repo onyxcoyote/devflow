@@ -36,6 +36,8 @@ def complete_report(**overrides):
         "question_resolutions": [],
         "missing_context": [],
         "research_checkpoints": [],
+        "impact_chains": [],
+        "architecture_decisions": [],
     }
     values.update(overrides)
     return values

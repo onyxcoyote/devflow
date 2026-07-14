@@ -76,6 +76,29 @@ def _planned_sources(plan: dict, repo_path: str) -> tuple[list[str], dict[str, s
     return paths, sources
 
 
+def _load_impact_context(plan_path: Path) -> dict:
+    path = plan_path.with_name("impact-context.json")
+    if not path.is_file():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _impact_paths(context: dict) -> list[str]:
+    paths = []
+    for chain in context.get("impact_chains", []):
+        values = chain.get("affected_definitions", [])
+        values += [stage.get("path", "") for stage in chain.get("stages", [])]
+        for value in values:
+            path = value.split(":", 1)[0]
+            if path and path not in paths:
+                paths.append(path)
+    for decision in context.get("architecture_decisions", []):
+        for path in decision.get("affected_files", []):
+            if path and path not in paths:
+                paths.append(path)
+    return paths
+
+
 def _validate_replacements(proposal: dict, planned_paths: list[str], repo_path: str) -> None:
     root = Path(repo_path).resolve()
     simulated: dict[str, str | None] = {}
@@ -153,7 +176,52 @@ def implementation_flow(
 ) -> dict:
     logger = get_run_logger()
     plan, resolved_plan_path = _load_plan(plan_path, config.repo_path)
-    planned_paths, sources = _planned_sources(plan, config.repo_path)
+    run_dir = Path(config.repo_path) / ".devflow" / "implementations" / "runs" / datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    run_dir.mkdir(parents=True, exist_ok=False)
+    impact_context = _load_impact_context(resolved_plan_path)
+    planned_paths, _ = _planned_sources(plan, config.repo_path)
+    additional_paths = [
+        path for path in _impact_paths(impact_context) if path not in planned_paths
+    ]
+    preflight_path = run_dir / "preflight.json"
+    preflight_path.write_text(json.dumps({
+        "planned_paths": planned_paths,
+        "impact_paths_not_in_plan": additional_paths,
+    }, indent=2), encoding="utf-8")
+    if additional_paths:
+        print("Implementation preflight found impact files not named by the plan:")
+        for path in additional_paths:
+            print(f"  - {path}")
+        if not _confirm("Add these impact-reviewed files to implementation scope?", auto_approve):
+            proposal = {
+                "status": "blocked",
+                "summary": "Implementation stopped at impact-scope preflight.",
+                "replacements": [],
+                "deviations": [],
+                "questions": ["Review impact files omitted from the approved plan."],
+            }
+            proposal_path = run_dir / "proposal.json"
+            proposal_path.write_text(json.dumps(proposal, indent=2), encoding="utf-8")
+            evidence_path = run_dir / "evidence.json"
+            evidence_path.write_text(json.dumps({
+                "plan_path": str(resolved_plan_path),
+                "applied": False,
+                "preflight_stopped": True,
+                "impact_paths_not_in_plan": additional_paths,
+            }, indent=2), encoding="utf-8")
+            return {"proposal": proposal, "applied": False, "paths": {
+                "proposal": str(proposal_path.resolve()),
+                "preflight": str(preflight_path.resolve()),
+                "evidence": str(evidence_path.resolve()),
+            }}
+    expanded_plan = {
+        **plan,
+        "proposed_changes": [
+            *plan.get("proposed_changes", []),
+            *[{"path": path} for path in additional_paths],
+        ],
+    }
+    planned_paths, sources = _planned_sources(expanded_plan, config.repo_path)
     prompt = (
         "Implement the approved plan using exact text replacements. Stay within planned files. "
         "Inspect the supplied bounded source before editing. Preserve existing behavior unless "
@@ -163,6 +231,8 @@ def implementation_flow(
         "verbatim from the supplied source, include enough surrounding text to make it unique, "
         "and order same-file edits so each old_text exists after earlier edits.\n\n"
         f"PLAN\n{json.dumps(plan, indent=2)}\n\n"
+        f"IMPACT CONTEXT AND APPROVED ARCHITECTURE DECISIONS\n"
+        f"{json.dumps(impact_context, indent=2)}\n\n"
         f"PLANNED SOURCES\n{json.dumps(sources, indent=2)}"
     )
     model = get_code_review_model(config.model)
@@ -170,8 +240,6 @@ def implementation_flow(
         ImplementationProposal,
         method="function_calling",
     )
-    run_dir = Path(config.repo_path) / ".devflow" / "implementations" / "runs" / datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    run_dir.mkdir(parents=True, exist_ok=False)
     logger.info("Requesting implementation proposal for %d planned files", len(planned_paths))
     proposal = None
     validation_error = None
@@ -254,6 +322,7 @@ def implementation_flow(
     paths = {
         "proposal": str(proposal_path.resolve()),
         "evidence": str(evidence_path.resolve()),
+        "preflight": str(preflight_path.resolve()),
     }
     if diagnostic_path is not None:
         paths["validation_error"] = str(diagnostic_path.resolve())

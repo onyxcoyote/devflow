@@ -98,6 +98,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--context-hints",
         help="JSON research-hints file created by a stopped context run.",
     )
+    plan.add_argument(
+        "--architecture-decisions",
+        help="JSON architecture decisions file created by a stopped planning run.",
+    )
     serena = subparsers.add_parser(
         "serena-context",
         help="Discover grounded repository context with Serena.",
@@ -313,6 +317,7 @@ def _run_plan(args: argparse.Namespace) -> int:
                 auto_approve=args.yes,
                 answers_path=args.answers,
                 context_hints_path=args.context_hints,
+                architecture_decisions_path=args.architecture_decisions,
             )
         except SerenaContextRunError as error:
             return _handle_serena_error(error)
@@ -330,6 +335,9 @@ def _run_plan(args: argparse.Namespace) -> int:
                 print(f"Context input/artifact: {result['context_input_path']}")
                 if str(result["context_input_path"]).endswith("context-input.json"):
                     print("Fill in its hints and rerun plan with --context-hints.")
+            if result.get("architecture_input_path"):
+                print(f"Architecture input: {result['architecture_input_path']}")
+                print("Fill it in and rerun plan with --architecture-decisions.")
             return 0
         plan = result["plan"]
         print()
@@ -375,6 +383,8 @@ def _run_serena_context(args: argparse.Namespace) -> int:
     print(f"Relevant files: {len(report['relevant_files'])}")
     print(f"Context: {result['paths']['context']}")
     print(f"Evidence: {result['paths']['evidence']}")
+    if result["paths"].get("preflight"):
+        print(f"Preflight: {result['paths']['preflight']}")
     if result["paths"].get("validation_error"):
         print(f"Validation error: {result['paths']['validation_error']}")
     print(f"Round reports: {result['paths']['rounds']}")
