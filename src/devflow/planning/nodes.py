@@ -192,6 +192,13 @@ def make_plan_node(model, compact_retry_model, logger):
                             + prompt
                         )
                 else:
+                    if parsing_error is not None:
+                        logger.warning(
+                            "Planning attempt %d response validation failed: %s: %s",
+                            attempt,
+                            type(parsing_error).__name__,
+                            str(parsing_error)[:4000],
+                        )
                     failure_details.append(
                         "output limit reached" if truncated else (
                             metadata["parsing_error"] or "no parsed plan returned"
@@ -217,10 +224,11 @@ def make_plan_node(model, compact_retry_model, logger):
                     f"{type(error).__name__}: {str(error)[:500]}"
                 )
                 logger.warning(
-                    "Planning attempt %d failed after %.1fs: %s",
+                    "Planning attempt %d failed after %.1fs: %s: %s",
                     attempt,
                     elapsed_seconds,
-                    failure_details[-1],
+                    type(error).__name__,
+                    str(error)[:4000],
                 )
                 if state["save_model_exchange"]:
                     exchange_attempt["error"] = {

@@ -43,6 +43,7 @@ class PlanningFlowTests(unittest.TestCase):
         self.assertIn("ORIGINAL DEVELOPMENT REQUEST\nImprove planning.", result)
         self.assertIn("Where is the provider constructed?", result)
         self.assertIn("Trace model construction.", result)
+        self.assertIn("question_resolutions", result)
 
     def test_question_keys_ignore_case_spacing_and_terminal_punctuation(self):
         self.assertEqual(

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import subprocess
 import sys
 import webbrowser
+from contextlib import contextmanager
 from pathlib import Path
 
 from .code_review.config import load_code_review_config
 from .code_review.flow import code_review_flow
 from .planning.config import load_planning_config
+from .planning.artifacts import create_plan_run_dir
 from .planning.flow import planning_flow
 from .repository_context.config import load_serena_context_config
 from .repository_context.flow import serena_context_flow
@@ -74,6 +77,17 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="open_report",
         help="Open plan.md after the run.",
     )
+    plan.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Approve context research and replanning gates without prompting.",
+    )
+    plan.add_argument(
+        "--open-plan",
+        action="store_true",
+        help="Open plan.json after the run without prompting.",
+    )
     serena = subparsers.add_parser(
         "serena-context",
         help="Discover grounded repository context with Serena.",
@@ -89,6 +103,86 @@ def _open_file(path: str) -> None:
         subprocess.Popen(["xdg-open", str(resolved)])
     except OSError:
         webbrowser.open(resolved.as_uri())
+
+
+class _TeeStdout:
+    def __init__(self, console, log_file):
+        self.console = console
+        self.log_file = log_file
+
+    def write(self, value):
+        self.console.write(value)
+        self.log_file.write(value)
+        self.log_file.flush()
+        return len(value)
+
+    def flush(self):
+        self.console.flush()
+        self.log_file.flush()
+
+    def isatty(self):
+        return self.console.isatty()
+
+    def __getattr__(self, name):
+        return getattr(self.console, name)
+
+
+class _ExcludePrefectLogs(logging.Filter):
+    def filter(self, record):
+        return not record.name.startswith("prefect")
+
+
+@contextmanager
+def _capture_plan_log(run_dir: Path):
+    log_path = run_dir / "run.log"
+    with log_path.open("a", encoding="utf-8") as log_file:
+        original_stdout = sys.stdout
+        sys.stdout = _TeeStdout(original_stdout, log_file)
+        formatter = logging.Formatter(
+            "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+        )
+        root_handler = logging.FileHandler(log_path, encoding="utf-8")
+        root_handler.setLevel(logging.INFO)
+        root_handler.setFormatter(formatter)
+        root_handler.addFilter(_ExcludePrefectLogs())
+        prefect_handler = logging.FileHandler(log_path, encoding="utf-8")
+        prefect_handler.setLevel(logging.INFO)
+        prefect_handler.setFormatter(formatter)
+        root_logger = logging.getLogger()
+        prefect_logger = logging.getLogger("prefect")
+        previous_root_level = root_logger.level
+        previous_prefect_level = prefect_logger.level
+        root_logger.setLevel(min(previous_root_level, logging.INFO))
+        prefect_logger.setLevel(min(previous_prefect_level, logging.INFO))
+        root_logger.addHandler(root_handler)
+        prefect_logger.addHandler(prefect_handler)
+        try:
+            yield str(log_path.resolve())
+        finally:
+            prefect_logger.removeHandler(prefect_handler)
+            root_logger.removeHandler(root_handler)
+            prefect_logger.setLevel(previous_prefect_level)
+            root_logger.setLevel(previous_root_level)
+            prefect_handler.close()
+            root_handler.close()
+            sys.stdout = original_stdout
+
+
+def _confirm_open_plan(path: str, force_open: bool) -> bool:
+    if force_open:
+        logging.getLogger(__name__).info("Open-plan gate auto-approved")
+        return True
+    if not sys.stdin.isatty():
+        logging.getLogger(__name__).info(
+            "Open-plan gate skipped because stdin is not interactive"
+        )
+        return False
+    answer = input(f"Open the JSON plan {path}? [y/N]: ").strip().lower()
+    approved = answer in {"y", "yes"}
+    logging.getLogger(__name__).info(
+        "Open-plan gate %s", "approved" if approved else "declined"
+    )
+    return approved
 
 
 def _print_resolved_config(config) -> None:
@@ -164,21 +258,31 @@ def _run_plan(args: argparse.Namespace) -> int:
         provider_override=args.provider,
         model_override=args.model,
     )
-    _print_resolved_config(config)
-    result = planning_flow(
-        args.request,
-        config,
-        serena_config,
-        context_path=args.context,
-        previous_plan_path=args.from_plan,
-    )
-    plan = result["plan"]
-    print()
-    print(f"DEVELOPMENT PLAN: {plan['status'].upper()}")
-    print(f"Objective: {plan['objective']}")
-    print(f"Report: {result['paths']['markdown']}")
-    if args.open_report:
-        _open_file(result["paths"]["markdown"])
+    run_dir = create_plan_run_dir(config.output_dir)
+    with _capture_plan_log(run_dir) as log_path:
+        _print_resolved_config(config)
+        print(f"Run log: {log_path}")
+        print()
+        result = planning_flow(
+            args.request,
+            config,
+            serena_config,
+            context_path=args.context,
+            previous_plan_path=args.from_plan,
+            run_dir=str(run_dir),
+            auto_approve=args.yes,
+        )
+        plan = result["plan"]
+        print()
+        print(f"DEVELOPMENT PLAN: {plan['status'].upper()}")
+        print(f"Objective: {plan['objective']}")
+        print(f"Report: {result['paths']['markdown']}")
+        print(f"JSON: {result['paths']['json']}")
+        print(f"Log: {result['paths']['log']}")
+        if args.open_report:
+            _open_file(result["paths"]["markdown"])
+        if _confirm_open_plan(result["paths"]["json"], args.open_plan):
+            _open_file(result["paths"]["json"])
     return 0 if plan["status"] == "ready" else 2
 
 

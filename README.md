@@ -34,6 +34,12 @@ devflow serena-context - relevant file selection using serena MCP
 # Run Serena, then create a plan
 devflow plan "request"
 
+# Auto-approve supplemental context and replanning gates
+devflow plan --yes "request"
+
+# Open plan.json after the run without the final prompt
+devflow plan --open-plan "request"
+
 # Reuse Serena context
 devflow plan --context /path/to/context.json "request"
 

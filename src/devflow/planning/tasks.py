@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -58,10 +57,10 @@ def run_planning_graph(initial_state: dict[str, Any], config: PlanningConfig) ->
 
 
 @task
-def save_plan_outputs(final_state: dict[str, Any], output_dir: str) -> dict[str, str]:
-    root = Path(output_dir)
-    run_dir = root / "runs" / datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    run_dir.mkdir(parents=True, exist_ok=False)
+def save_plan_outputs(final_state: dict[str, Any], run_dir_path: str) -> dict[str, str]:
+    run_dir = Path(run_dir_path)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    root = run_dir.parent.parent
     markdown_path = run_dir / "plan.md"
     json_path = run_dir / "plan.json"
     evidence_path = run_dir / "evidence.json"
@@ -101,6 +100,7 @@ def save_plan_outputs(final_state: dict[str, Any], output_dir: str) -> dict[str,
         "markdown": str(markdown_path.resolve()),
         "json": str(json_path.resolve()),
         "evidence": str(evidence_path.resolve()),
+        "log": str((run_dir / "run.log").resolve()),
     }
     if final_state["save_model_exchange"]:
         paths["model_exchange"] = str(exchange_path.resolve())

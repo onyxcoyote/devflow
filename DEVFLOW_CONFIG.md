@@ -71,6 +71,11 @@ Serena for up to two targeted supplemental context rounds. Each question and han
 the flow log. Repeated questions or duplicate supplemental evidence stop the loop early; product
 and architecture decisions are not sent to Serena.
 
+Interactive plan runs ask before sending repository questions to Serena and again before
+replanning with the answers. Use `--yes` or `-y` to approve those workflow gates. After artifacts
+are saved, Devflow asks whether to open `plan.json`; use `--open-plan` to open it without prompting.
+Console messages and gate decisions are also saved to `run.log` in the plan run directory.
+
 Run a read-only plan with:
 
 ```bash

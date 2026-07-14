@@ -4,10 +4,21 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from devflow.planning.artifacts import load_context_artifact, load_previous_plan
+from devflow.planning.artifacts import (
+    create_plan_run_dir,
+    load_context_artifact,
+    load_previous_plan,
+)
 
 
 class PlanningArtifactTests(unittest.TestCase):
+    def test_creates_plan_run_directory_before_work_starts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = create_plan_run_dir(directory)
+
+            self.assertTrue(run_dir.is_dir())
+            self.assertEqual(run_dir.parent.name, "runs")
+
     def make_repo(self, directory: str) -> tuple[Path, str]:
         repo = Path(directory)
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)

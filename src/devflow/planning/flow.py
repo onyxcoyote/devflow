@@ -1,4 +1,5 @@
 import json
+import sys
 import time
 
 from prefect import flow, get_run_logger
@@ -48,6 +49,41 @@ def _planning_state(
     }
 
 
+def _confirm(
+    prompt: str,
+    *,
+    auto_approve: bool,
+    logger,
+) -> bool:
+    if auto_approve:
+        logger.info("Human gate auto-approved: %s", prompt)
+        return True
+    if not sys.stdin.isatty():
+        logger.warning("Human gate declined because stdin is not interactive: %s", prompt)
+        return False
+    answer = input(f"{prompt} [y/N]: ").strip().lower()
+    approved = answer in {"y", "yes"}
+    logger.info("Human gate %s: %s", "approved" if approved else "declined", prompt)
+    return approved
+
+
+def _log_supplemental_answers(report: dict, logger) -> None:
+    resolutions = report.get("question_resolutions", [])
+    logger.info("Supplemental repository answers (%d)", len(resolutions))
+    if not resolutions:
+        logger.warning("Serena returned no explicit question resolutions")
+    for index, resolution in enumerate(resolutions, start=1):
+        logger.info("Answer %d question: %s", index, resolution.get("question", ""))
+        logger.info("Answer %d resolution: %s", index, resolution.get("resolution", ""))
+        logger.info("Answer %d source: %s", index, resolution.get("source", ""))
+    for item in report.get("missing_context", []):
+        logger.warning(
+            "Supplemental context remains unresolved: %s; suggested action: %s",
+            item.get("description", ""),
+            item.get("suggested_action", ""),
+        )
+
+
 @flow(name="development-plan")
 def planning_flow(
     request: str,
@@ -55,6 +91,8 @@ def planning_flow(
     serena_config: SerenaContextConfig,
     context_path: str | None = None,
     previous_plan_path: str | None = None,
+    run_dir: str | None = None,
+    auto_approve: bool = False,
 ) -> dict:
     logger = get_run_logger()
     previous_plan, resolved_previous_plan_path = load_previous_plan(
@@ -134,6 +172,24 @@ def planning_flow(
             logger.info("Context question %d: %s", index, item["question"])
             seen_questions.add(question_key(item["question"]))
 
+        if not _confirm(
+            "Send these repository questions to Serena context?",
+            auto_approve=auto_approve,
+            logger=logger,
+        ):
+            context_source.setdefault("human_gates", []).append({
+                "round": round_number,
+                "gate": "send_questions",
+                "approved": False,
+            })
+            logger.info("Research stopped by user before supplemental context")
+            break
+        context_source.setdefault("human_gates", []).append({
+            "round": round_number,
+            "gate": "send_questions",
+            "approved": True,
+        })
+
         supplemental_request = supplemental_context_request(
             request,
             new_questions,
@@ -142,6 +198,7 @@ def planning_flow(
         logger.info("Sending %d targeted question(s) to Serena context", len(new_questions))
         supplemental_result = serena_context_flow(supplemental_request, serena_config)
         supplemental_report = supplemental_result["report"]
+        _log_supplemental_answers(supplemental_report, logger)
         report_key = json.dumps(
             supplemental_report,
             sort_keys=True,
@@ -164,6 +221,23 @@ def planning_flow(
             "paths": supplemental_result.get("paths", {}),
         })
         supplemental_rounds_completed += 1
+        if not _confirm(
+            "Proceed to planning with these supplemental answers?",
+            auto_approve=auto_approve,
+            logger=logger,
+        ):
+            context_source.setdefault("human_gates", []).append({
+                "round": round_number,
+                "gate": "refine_plan",
+                "approved": False,
+            })
+            logger.info("Planning refinement stopped by user after supplemental context")
+            break
+        context_source.setdefault("human_gates", []).append({
+            "round": round_number,
+            "gate": "refine_plan",
+            "approved": True,
+        })
         logger.info(
             "Supplemental context round %d completed; retrying planning with added evidence",
             round_number,
@@ -194,10 +268,16 @@ def planning_flow(
             )
 
     final_state["model_result"]["planning_rounds"] = planning_rounds
+    final_state["context_source"] = context_source
+    final_state["repository_context"] = repository_context
     logger.info(
         "Planning research completed after %d supplemental context round(s); final status=%s",
         supplemental_rounds_completed,
         final_state["plan"]["status"],
     )
-    paths = save_plan_outputs(final_state, config.output_dir)
+    if run_dir is None:
+        from .artifacts import create_plan_run_dir
+
+        run_dir = str(create_plan_run_dir(config.output_dir))
+    paths = save_plan_outputs(final_state, run_dir)
     return {"plan": final_state["plan"], "paths": paths}

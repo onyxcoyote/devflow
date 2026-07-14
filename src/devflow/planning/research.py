@@ -28,7 +28,9 @@ def supplemental_context_request(
         (
             "Return only new repository evidence that answers the questions below. Identify "
             "relevant files, symbols, call paths, and any repository facts that remain unresolved. "
-            "Do not make product decisions and do not repeat unrelated context."
+            "For every planner question, add a question_resolutions entry when it is answered; "
+            "otherwise retain it in missing_context. Do not make product decisions and do not "
+            "repeat unrelated context."
         ),
         "",
         f"ORIGINAL DEVELOPMENT REQUEST\n{request}",

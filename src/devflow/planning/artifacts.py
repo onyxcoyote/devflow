@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import datetime
 from pathlib import Path
+
+
+def create_plan_run_dir(output_dir: str) -> Path:
+    root = Path(output_dir)
+    run_dir = root / "runs" / datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    run_dir.mkdir(parents=True, exist_ok=False)
+    return run_dir.resolve()
 
 
 def repository_head(repo_path: str) -> str:
