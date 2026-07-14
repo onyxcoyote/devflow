@@ -1,10 +1,16 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from devflow.repository_context.config import SerenaContextConfig
 from devflow.repository_context.serena import (
     READ_ONLY_SERENA_TOOLS,
+    SERENA_SCHEMA_VERSION,
+    SERENA_STRUCTURED_OUTPUT_METHOD,
+    SerenaContextRunError,
     SerenaContextReport,
     _call_signature,
     _bounded_transcript,
@@ -14,7 +20,22 @@ from devflow.repository_context.serena import (
     _tool_result_text,
     _ModelRequestLimiter,
     _references_generated_artifacts,
+    run_serena_context,
 )
+
+
+def complete_report(**overrides):
+    values = {
+        "status": "sufficient",
+        "architecture_summary": "Planning is coordinated by the planning graph.",
+        "relevant_files": [],
+        "relevant_symbols": [],
+        "evidence": [],
+        "question_resolutions": [],
+        "missing_context": [],
+    }
+    values.update(overrides)
+    return values
 
 
 class SerenaToolFilteringTests(unittest.TestCase):
@@ -177,7 +198,11 @@ class SerenaModelRequestLimiterTests(unittest.IsolatedAsyncioTestCase):
 
         limiter = _ModelRequestLimiter(0.0)
 
-        self.assertEqual(await limiter.invoke(Model(), "request"), "request")
+        with patch("builtins.print") as output:
+            result = await limiter.invoke(Model(), "request", "Choose repository searches")
+
+        self.assertEqual(result, "request")
+        output.assert_called_once_with("LLM call 1: Choose repository searches")
         self.assertEqual(limiter.request_count, 1)
         self.assertEqual(limiter.wait_count, 0)
 
@@ -187,12 +212,25 @@ class SerenaModelRequestLimiterTests(unittest.IsolatedAsyncioTestCase):
                 return value
 
         limiter = _ModelRequestLimiter(0.001)
-        await limiter.invoke(Model(), "first")
-        await limiter.invoke(Model(), "second")
+        await limiter.invoke(Model(), "first", "Choose repository searches")
+        await limiter.invoke(Model(), "second", "Review tool results and continue")
 
         self.assertEqual(limiter.request_count, 2)
         self.assertEqual(limiter.wait_count, 1)
         self.assertGreater(limiter.total_wait_seconds, 0)
+
+    async def test_prints_model_error_before_raising(self):
+        class Model:
+            async def ainvoke(self, value):
+                raise RuntimeError("invalid argument")
+
+        limiter = _ModelRequestLimiter(0.0)
+        with patch("builtins.print") as output:
+            with self.assertRaisesRegex(RuntimeError, "invalid argument"):
+                await limiter.invoke(Model(), "request", "Create grounded context report")
+
+        self.assertIn("LLM ERROR", output.call_args_list[-1].args[0])
+        self.assertIn("invalid argument", output.call_args_list[-1].args[0])
 
 
 class SerenaTranscriptTests(unittest.TestCase):
@@ -212,13 +250,12 @@ class SerenaTranscriptTests(unittest.TestCase):
 
 class SerenaReportSchemaTests(unittest.TestCase):
     def test_accepts_concise_structured_evidence(self):
-        report = SerenaContextReport(
-            status="sufficient",
-            architecture_summary="Planning is coordinated by the planning graph.",
+        report = SerenaContextReport(**complete_report(
             relevant_files=[{
                 "path": "src/devflow/planning/graph.py",
                 "role": "probable_change_target",
                 "reason": "The requested behavior is implemented by this graph.",
+                "symbols": [],
             }],
             evidence=[{
                 "claim": "The graph invokes the planning node.",
@@ -229,7 +266,7 @@ class SerenaReportSchemaTests(unittest.TestCase):
                 "resolution": "The planning graph invokes the planning node.",
                 "source": "src/devflow/planning/graph.py:build_planning_graph",
             }],
-        )
+        ))
 
         self.assertEqual(report.evidence[0].claim, "The graph invokes the planning node.")
         self.assertEqual(
@@ -243,41 +280,67 @@ class SerenaReportSchemaTests(unittest.TestCase):
 
     def test_relevant_file_role_is_required(self):
         with self.assertRaises(ValueError):
-            SerenaContextReport(
-                status="sufficient",
-                architecture_summary="Planning is coordinated by the planning graph.",
+            SerenaContextReport(**complete_report(
                 relevant_files=[{
                     "path": "src/devflow/planning/graph.py",
                     "reason": "The graph is relevant.",
+                    "symbols": [],
                 }],
-            )
+            ))
 
     def test_rejects_question_resolution_without_source(self):
         with self.assertRaises(ValueError):
-            SerenaContextReport(
-                status="sufficient",
-                architecture_summary="Planning is coordinated by the planning graph.",
+            SerenaContextReport(**complete_report(
                 question_resolutions=[{
                     "question": "Which graph owns planning?",
                     "resolution": "The planning graph owns it.",
                 }],
-            )
+            ))
 
     def test_rejects_unknown_relevant_file_role(self):
         with self.assertRaises(ValueError):
-            SerenaContextReport(
-                status="sufficient",
-                architecture_summary="Planning is coordinated by the planning graph.",
+            SerenaContextReport(**complete_report(
                 relevant_files=[{
                     "path": "src/devflow/planning/graph.py",
                     "role": "maybe",
                     "reason": "The graph might be relevant.",
+                    "symbols": [],
                 }],
-            )
+            ))
 
-    def test_rejects_oversized_architecture_summary(self):
-        with self.assertRaises(ValueError):
-            SerenaContextReport(
-                status="sufficient",
-                architecture_summary="x" * 3001,
-            )
+    def test_schema_is_portable_and_fully_required(self):
+        schema = SerenaContextReport.model_json_schema()
+
+        def check_objects(value):
+            if isinstance(value, dict):
+                if value.get("type") == "object":
+                    self.assertFalse(value.get("additionalProperties", True))
+                    self.assertEqual(set(value.get("required", [])), set(value["properties"]))
+                self.assertNotIn("maxLength", value)
+                self.assertNotIn("maxItems", value)
+                for nested in value.values():
+                    check_objects(nested)
+            elif isinstance(value, list):
+                for nested in value:
+                    check_objects(nested)
+
+        check_objects(schema)
+        self.assertEqual(SERENA_SCHEMA_VERSION, "portable-v1")
+        self.assertEqual(SERENA_STRUCTURED_OUTPUT_METHOD, "function_calling")
+
+
+class SerenaFailureArtifactTests(unittest.TestCase):
+    def test_writes_diagnostic_and_raises_hard_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = SimpleNamespace(output_dir=temp_dir)
+            with patch(
+                "devflow.repository_context.serena._run_serena",
+                side_effect=RuntimeError("provider rejected arguments"),
+            ):
+                with self.assertRaises(SerenaContextRunError) as raised:
+                    run_serena_context("Investigate failure", config)
+
+            path = Path(raised.exception.diagnostic_path)
+            diagnostic = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(diagnostic["exception_type"], "RuntimeError")
+            self.assertIn("provider rejected arguments", diagnostic["exception_message"])

@@ -4,12 +4,13 @@ import asyncio
 import json
 import re
 import subprocess
+import traceback
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .config import SerenaContextConfig
 
@@ -28,65 +29,92 @@ READ_ONLY_SERENA_TOOLS = {
 GENERATED_ARTIFACT_PATH = re.compile(r"(^|[\\/])\.devflow([\\/]|$)")
 
 
-PathText = Annotated[str, Field(max_length=500)]
-SymbolText = Annotated[str, Field(max_length=300)]
-EvidenceText = Annotated[str, Field(max_length=500)]
+SERENA_SCHEMA_VERSION = "portable-v1"
+SERENA_STRUCTURED_OUTPUT_METHOD = "function_calling"
 
 
-class RelevantFile(BaseModel):
-    path: PathText
+class SerenaSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class RelevantFile(SerenaSchema):
+    path: str = Field(description="Repository-relative path; maximum 500 characters.")
     role: Literal[
         "probable_change_target",
         "candidate_change_target",
         "supporting_context",
     ]
-    reason: str = Field(max_length=800)
-    symbols: list[SymbolText] = Field(default_factory=list, max_length=20)
+    reason: str = Field(description="Grounded reason; maximum 800 characters.")
+    symbols: list[str] = Field(
+        description="Maximum 20 symbols, each at most 300 characters; return [] if empty."
+    )
 
 
-class ContextEvidence(BaseModel):
-    claim: EvidenceText
-    source: EvidenceText
+class ContextEvidence(SerenaSchema):
+    claim: str = Field(description="Short factual claim; maximum 500 characters.")
+    source: str = Field(description="Supporting path or symbol; maximum 500 characters.")
 
 
-class QuestionResolution(BaseModel):
-    question: str = Field(max_length=1000)
-    resolution: str = Field(max_length=1000)
-    source: EvidenceText
+class QuestionResolution(SerenaSchema):
+    question: str = Field(description="Resolved question; maximum 1,000 characters.")
+    resolution: str = Field(description="Grounded answer; maximum 1,000 characters.")
+    source: str = Field(description="Supporting path or symbol; maximum 500 characters.")
 
 
-class MissingContextItem(BaseModel):
+class MissingContextItem(SerenaSchema):
     kind: Literal[
         "repository",
         "user_decision",
         "tool_failure",
         "external_information",
     ]
-    description: str = Field(max_length=1000)
-    suggested_action: str = Field(max_length=1000)
-    related_files: list[PathText] = Field(default_factory=list, max_length=10)
-    related_symbols: list[SymbolText] = Field(default_factory=list, max_length=20)
+    description: str = Field(description="Missing information; maximum 1,000 characters.")
+    suggested_action: str = Field(description="Next action; maximum 1,000 characters.")
+    related_files: list[str] = Field(
+        description="Maximum 10 repository paths, each at most 500 characters; return [] if empty."
+    )
+    related_symbols: list[str] = Field(
+        description="Maximum 20 symbols, each at most 300 characters; return [] if empty."
+    )
 
 
-class SerenaContextReport(BaseModel):
+class SerenaContextReport(SerenaSchema):
     status: Literal[
         "sufficient",
         "needs_repository_context",
         "needs_user_decision",
         "blocked",
     ]
-    architecture_summary: str = Field(max_length=3000)
-    relevant_files: list[RelevantFile] = Field(default_factory=list, max_length=30)
-    relevant_symbols: list[SymbolText] = Field(default_factory=list, max_length=50)
-    evidence: list[ContextEvidence] = Field(default_factory=list, max_length=30)
+    architecture_summary: str = Field(
+        description="Concise grounded architecture summary; maximum 3,000 characters."
+    )
+    relevant_files: list[RelevantFile] = Field(
+        description="Maximum 30 grounded files; return [] if empty."
+    )
+    relevant_symbols: list[str] = Field(
+        description="Maximum 50 symbols, each at most 300 characters; return [] if empty."
+    )
+    evidence: list[ContextEvidence] = Field(
+        description="Maximum 30 short evidence entries; return [] if empty."
+    )
     question_resolutions: list[QuestionResolution] = Field(
-        default_factory=list,
-        max_length=10,
+        description="Maximum 10 grounded question resolutions; return [] if empty."
     )
     missing_context: list[MissingContextItem] = Field(
-        default_factory=list,
-        max_length=10,
+        description="Maximum 10 missing-context items; return [] if empty."
     )
+
+
+class SerenaContextRunError(RuntimeError):
+    def __init__(self, message: str, diagnostic_path: str):
+        super().__init__(message)
+        self.diagnostic_path = diagnostic_path
+
+
+class _SerenaReportGenerationError(RuntimeError):
+    def __init__(self, errors: list[dict[str, Any]]):
+        super().__init__("Serena context report generation failed after two attempts")
+        self.details = errors
 
 
 class _ModelRequestLimiter:
@@ -97,7 +125,9 @@ class _ModelRequestLimiter:
         self.wait_count = 0
         self.total_wait_seconds = 0.0
 
-    async def invoke(self, model, messages):
+    async def invoke(self, model, messages, purpose: str):
+        if not 10 <= len(purpose) <= 50:
+            raise ValueError("Model-call purpose must be 10-50 characters")
         if self.last_started_at is not None:
             wait_seconds = max(
                 0.0,
@@ -109,7 +139,12 @@ class _ModelRequestLimiter:
                 await asyncio.sleep(wait_seconds)
         self.last_started_at = perf_counter()
         self.request_count += 1
-        return await model.ainvoke(messages)
+        print(f"LLM call {self.request_count}: {purpose}")
+        try:
+            return await model.ainvoke(messages)
+        except Exception as error:
+            print(f"LLM ERROR ({purpose}): {type(error).__name__}: {error}")
+            raise
 
 
 def _langchain_tools(mcp_tools) -> list[dict[str, Any]]:
@@ -293,7 +328,12 @@ async def _explore_round(
     calls_attempted = 0
 
     while calls_attempted < tool_call_budget:
-        response = await request_limiter.invoke(explorer, messages)
+        purpose = (
+            f"Choose repository searches (round {round_number})"
+            if not events
+            else "Review tool results and continue"
+        )
+        response = await request_limiter.invoke(explorer, messages, purpose)
         messages.append(response)
         tool_calls = response.tool_calls or []
         if not tool_calls:
@@ -361,7 +401,10 @@ async def _explore_round(
             ))
             calls_attempted += 1
 
-    structured_report_model = report_model.with_structured_output(SerenaContextReport)
+    structured_report_model = report_model.with_structured_output(
+        SerenaContextReport,
+        method=SERENA_STRUCTURED_OUTPUT_METHOD,
+    )
     transcript_text, included_events = _bounded_transcript(
         events,
         config.max_transcript_chars,
@@ -403,33 +446,24 @@ async def _explore_round(
     ]
     for attempt, prompt in enumerate(prompts, start=1):
         try:
-            report = await request_limiter.invoke(structured_report_model, prompt)
+            purpose = (
+                "Create grounded context report"
+                if attempt == 1
+                else "Retry compact context report"
+            )
+            report = await request_limiter.invoke(structured_report_model, prompt, purpose)
             return report.model_dump(), events, calls_attempted, attempt_errors
         except Exception as error:
             attempt_errors.append({
                 "attempt": attempt,
                 "type": type(error).__name__,
-                "message": str(error)[:2_000],
+                "message": str(error),
                 "round": round_number,
                 "transcript_events_included": included_events,
                 "transcript_events_total": len(events),
             })
 
-    blocked_report = SerenaContextReport(
-        status="blocked",
-        architecture_summary=(
-            "Serena exploration completed, but the structured context report "
-            "could not be generated after two attempts."
-        ),
-        missing_context=[MissingContextItem(
-            kind="tool_failure",
-            description="Both context-report model calls failed.",
-            suggested_action=(
-                "Inspect the saved Serena transcript and retry report generation."
-            ),
-        )],
-    )
-    return blocked_report.model_dump(), events, calls_attempted, attempt_errors
+    raise _SerenaReportGenerationError(attempt_errors)
 
 
 async def _explore_with_session(request: str, config: SerenaContextConfig, session):
@@ -536,16 +570,42 @@ def run_serena_context(request: str, config: SerenaContextConfig) -> dict[str, A
     run_dir = root / "runs" / datetime.now().strftime("%Y-%m-%d_%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=False)
     log_path = run_dir / "serena.log"
-    with log_path.open("w", encoding="utf-8") as stderr_log:
-        (
-            report,
-            events,
-            reports,
-            available_tools,
-            total_tool_calls,
-            report_errors,
-            request_limiter,
-        ) = asyncio.run(_run_serena(request, config, stderr_log))
+    try:
+        with log_path.open("w", encoding="utf-8") as stderr_log:
+            (
+                report,
+                events,
+                reports,
+                available_tools,
+                total_tool_calls,
+                report_errors,
+                request_limiter,
+            ) = asyncio.run(_run_serena(request, config, stderr_log))
+    except Exception as error:
+        diagnostic_path = run_dir / "serena-error.json"
+        diagnostic_path.write_text(
+            json.dumps({
+                "request": request,
+                "schema_version": SERENA_SCHEMA_VERSION,
+                "structured_output_method": SERENA_STRUCTURED_OUTPUT_METHOD,
+                "exception_type": type(error).__name__,
+                "exception_message": str(error),
+                "exception_repr": repr(error),
+                "details": getattr(error, "details", None),
+                "traceback": traceback.format_exc(),
+                "serena_log": str(log_path.resolve()),
+            }, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+        latest = root / "latest"
+        if latest.is_symlink() or latest.exists():
+            latest.unlink()
+        latest.symlink_to(Path("runs") / run_dir.name, target_is_directory=True)
+        print(f"SERENA ERROR: {type(error).__name__}: {error}")
+        print(f"Diagnostic: {diagnostic_path.resolve()}")
+        raise SerenaContextRunError(
+            str(error), str(diagnostic_path.resolve())
+        ) from error
     report_path = run_dir / "context.json"
     transcript_path = run_dir / "serena-transcript.json"
     rounds_path = run_dir / "round-reports.json"
@@ -591,6 +651,8 @@ def run_serena_context(request: str, config: SerenaContextConfig) -> dict[str, A
             "max_tool_result_chars": config.max_tool_result_chars,
             "max_transcript_chars": config.max_transcript_chars,
             "max_report_output_tokens": config.max_report_output_tokens,
+            "schema_version": SERENA_SCHEMA_VERSION,
+            "structured_output_method": SERENA_STRUCTURED_OUTPUT_METHOD,
             "model_request_min_interval_seconds": (
                 config.model_request_min_interval_seconds
             ),

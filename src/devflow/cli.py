@@ -15,6 +15,7 @@ from .planning.artifacts import create_plan_run_dir
 from .planning.flow import planning_flow
 from .repository_context.config import load_serena_context_config
 from .repository_context.flow import serena_context_flow
+from .repository_context.serena import SerenaContextRunError
 
 
 def _add_common_config_arguments(command: argparse.ArgumentParser) -> None:
@@ -185,6 +186,25 @@ def _confirm_open_plan(path: str, force_open: bool) -> bool:
     return approved
 
 
+def _confirm_open_diagnostic(path: str) -> bool:
+    if not sys.stdin.isatty():
+        logging.getLogger(__name__).info(
+            "Open-diagnostic gate skipped because stdin is not interactive"
+        )
+        return False
+    answer = input(f"Open the Serena diagnostic {path}? [y/N]: ").strip().lower()
+    return answer in {"y", "yes"}
+
+
+def _handle_serena_error(error: SerenaContextRunError) -> int:
+    print()
+    print(f"SERENA CONTEXT FAILED: {error}")
+    print(f"Diagnostic: {error.diagnostic_path}")
+    if _confirm_open_diagnostic(error.diagnostic_path):
+        _open_file(error.diagnostic_path)
+    return 2
+
+
 def _print_resolved_config(config) -> None:
     print("Resolved configuration")
     print(f"  Provider: {config.model.provider}")
@@ -263,15 +283,18 @@ def _run_plan(args: argparse.Namespace) -> int:
         _print_resolved_config(config)
         print(f"Run log: {log_path}")
         print()
-        result = planning_flow(
-            args.request,
-            config,
-            serena_config,
-            context_path=args.context,
-            previous_plan_path=args.from_plan,
-            run_dir=str(run_dir),
-            auto_approve=args.yes,
-        )
+        try:
+            result = planning_flow(
+                args.request,
+                config,
+                serena_config,
+                context_path=args.context,
+                previous_plan_path=args.from_plan,
+                run_dir=str(run_dir),
+                auto_approve=args.yes,
+            )
+        except SerenaContextRunError as error:
+            return _handle_serena_error(error)
         plan = result["plan"]
         print()
         print(f"DEVELOPMENT PLAN: {plan['status'].upper()}")
@@ -295,7 +318,10 @@ def _run_serena_context(args: argparse.Namespace) -> int:
         model_override=args.model,
     )
     _print_resolved_config(config)
-    result = serena_context_flow(args.request, config)
+    try:
+        result = serena_context_flow(args.request, config)
+    except SerenaContextRunError as error:
+        return _handle_serena_error(error)
     report = result["report"]
     print()
     print(f"SERENA CONTEXT: {report['status'].upper()}")
