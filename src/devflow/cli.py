@@ -90,6 +90,10 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Open plan.json after the run without prompting.",
     )
+    plan.add_argument(
+        "--answers",
+        help="JSON answers file created by a previous deferred planning run.",
+    )
     serena = subparsers.add_parser(
         "serena-context",
         help="Discover grounded repository context with Serena.",
@@ -303,6 +307,7 @@ def _run_plan(args: argparse.Namespace) -> int:
                 previous_plan_path=args.from_plan,
                 run_dir=str(run_dir),
                 auto_approve=args.yes,
+                answers_path=args.answers,
             )
         except SerenaContextRunError as error:
             return _handle_serena_error(error)
@@ -321,6 +326,12 @@ def _run_plan(args: argparse.Namespace) -> int:
         print(f"Report: {result['paths']['markdown']}")
         print(f"JSON: {result['paths']['json']}")
         print(f"Log: {result['paths']['log']}")
+        if result.get("user_input_path"):
+            print(f"User input: {result['user_input_path']}")
+            print(
+                "After editing it, rerun plan with "
+                f"--answers {result['user_input_path']} --from-plan {result['paths']['json']}"
+            )
         if args.open_report:
             _open_file(result["paths"]["markdown"])
         if _confirm_open_plan(result["paths"]["json"], args.open_plan):

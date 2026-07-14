@@ -1,6 +1,7 @@
 import json
 import sys
 import time
+from pathlib import Path
 
 from prefect import flow, get_run_logger
 
@@ -18,6 +19,7 @@ from .research import (
     supplemental_prior_report,
     supplemental_serena_config,
     supplemental_context_request,
+    user_decision_questions,
 )
 from .tasks import (
     run_planning_graph,
@@ -108,6 +110,58 @@ def _log_initial_context(report: dict, context_source: dict, logger) -> None:
         logger.info("Initial context artifact: %s", artifact)
 
 
+def _load_user_answers(path: str | None) -> list[dict[str, str]]:
+    if path is None:
+        return []
+    answer_path = Path(path).expanduser().resolve()
+    values = json.loads(answer_path.read_text(encoding="utf-8"))
+    answers = values.get("answers", values) if isinstance(values, dict) else values
+    if not isinstance(answers, list):
+        raise ValueError("User answers file must contain a list or an answers list")
+    return [
+        {"question": str(item["question"]), "answer": str(item["answer"])}
+        for item in answers
+        if isinstance(item, dict) and item.get("question") and item.get("answer")
+    ]
+
+
+def _collect_user_answers(
+    questions: list[dict[str, str]],
+    *,
+    auto_approve: bool,
+    run_dir: str,
+    logger,
+) -> tuple[list[dict[str, str]], str | None]:
+    print("Planning needs user decisions:")
+    for index, item in enumerate(questions, start=1):
+        print(f"  {index}. {item['question']}")
+        if item.get("impact"):
+            print(f"     Impact: {item['impact']}")
+    answers = []
+    if not auto_approve and sys.stdin.isatty():
+        for item in questions:
+            answer = input(f"Answer (blank to defer) — {item['question']}\n> ").strip()
+            if answer:
+                answers.append({"question": item["question"], "answer": answer})
+    if len(answers) == len(questions):
+        logger.info("Received %d user decision answer(s)", len(answers))
+        return answers, None
+
+    answered = {question_key(item["question"]) for item in answers}
+    template = {
+        "answers": [*answers, *[
+            {"question": item["question"], "answer": ""}
+            for item in questions
+            if question_key(item["question"]) not in answered
+        ]]
+    }
+    path = Path(run_dir) / "user-input.json"
+    path.write_text(json.dumps(template, indent=2), encoding="utf-8")
+    print(f"Deferred user decisions: {path.resolve()}")
+    print("Fill in each answer, then refine with --answers and --from-plan.")
+    return answers, str(path.resolve())
+
+
 @flow(name="development-plan")
 def planning_flow(
     request: str,
@@ -117,8 +171,12 @@ def planning_flow(
     previous_plan_path: str | None = None,
     run_dir: str | None = None,
     auto_approve: bool = False,
+    answers_path: str | None = None,
 ) -> dict:
     logger = get_run_logger()
+    if run_dir is None:
+        from .artifacts import create_plan_run_dir
+        run_dir = str(create_plan_run_dir(config.output_dir))
     previous_plan, resolved_previous_plan_path = load_previous_plan(
         previous_plan_path
     )
@@ -153,6 +211,10 @@ def planning_flow(
         repository_context = {"initial": repository_context}
     repository_context.setdefault("supplemental_rounds", [])
     context_source.setdefault("supplemental_rounds", [])
+    supplied_answers = _load_user_answers(answers_path)
+    if supplied_answers:
+        repository_context.setdefault("user_answers", []).extend(supplied_answers)
+        context_source["user_answers_path"] = str(Path(answers_path).resolve())
 
     _log_initial_context(repository_context, context_source, logger)
     if not _confirm(
@@ -190,8 +252,27 @@ def planning_flow(
     seen_supplemental_reports = set()
     planning_rounds = []
     supplemental_rounds_completed = 0
+    user_input_path = None
 
     for round_number in range(1, MAX_SUPPLEMENTAL_CONTEXT_ROUNDS + 1):
+        decisions = user_decision_questions(final_state["plan"])
+        if decisions:
+            answers, user_input_path = _collect_user_answers(
+                decisions,
+                auto_approve=auto_approve,
+                run_dir=run_dir,
+                logger=logger,
+            )
+            if answers:
+                repository_context.setdefault("user_answers", []).extend(answers)
+                logger.info("Retrying planning with user answers")
+                final_state = run_planning_graph(
+                    _planning_state(request, config, repository_context, context_source, previous_plan),
+                    config,
+                )
+                if user_input_path is None:
+                    continue
+            break
         questions = repository_context_questions(final_state["plan"])
         planning_rounds.append({
             "round": round_number,
@@ -205,14 +286,14 @@ def planning_flow(
         ]
         if not new_questions:
             if questions:
-                logger.warning(
-                    "Stopping supplemental context: planner repeated previously investigated questions"
-                )
+                logger.warning("Planner repeated previously investigated questions")
+                new_questions = questions
             elif final_state["plan"]["status"] == "needs_repository_context":
                 logger.warning(
                     "Stopping supplemental context: planner supplied no repository questions"
                 )
-            break
+            if not new_questions:
+                break
 
         logger.info(
             "Planning requested additional repository context (round %d/%d)",
@@ -334,9 +415,9 @@ def planning_flow(
         supplemental_rounds_completed,
         final_state["plan"]["status"],
     )
-    if run_dir is None:
-        from .artifacts import create_plan_run_dir
-
-        run_dir = str(create_plan_run_dir(config.output_dir))
     paths = save_plan_outputs(final_state, run_dir)
-    return {"plan": final_state["plan"], "paths": paths}
+    return {
+        "plan": final_state["plan"],
+        "paths": paths,
+        "user_input_path": user_input_path,
+    }

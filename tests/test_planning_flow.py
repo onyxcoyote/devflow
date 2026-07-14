@@ -9,6 +9,7 @@ from devflow.planning.research import (
     repository_context_questions,
     supplemental_prior_report,
     supplemental_context_request,
+    user_decision_questions,
 )
 
 
@@ -33,6 +34,11 @@ class PlanningFlowTests(unittest.TestCase):
             repository_context_questions({**plan, "status": "ready"}),
             [],
         )
+
+    def test_extracts_user_decisions_for_console_input(self):
+        item = {"kind": "user_decision", "question": "Preserve compatibility?"}
+        plan = {"status": "needs_user_decision", "outstanding_items": [item]}
+        self.assertEqual(user_decision_questions(plan), [item])
 
     def test_builds_targeted_supplemental_request(self):
         result = supplemental_context_request(

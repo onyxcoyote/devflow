@@ -41,6 +41,12 @@ devflow plan --yes "request"
 # Open plan.json after the run without the final prompt
 devflow plan --open-plan "request"
 
+# Resume a plan after filling in its generated user-input.json
+devflow plan \
+  --answers /path/to/user-input.json \
+  --from-plan /path/to/plan.json \
+  "request"
+
 # Propose edits from an approved plan, then ask before applying them
 devflow implement /path/to/plan.json
 

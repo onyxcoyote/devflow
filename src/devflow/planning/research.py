@@ -6,7 +6,7 @@ from pathlib import Path
 from devflow.repository_context.config import SerenaContextConfig
 
 
-MAX_SUPPLEMENTAL_CONTEXT_ROUNDS = 1
+MAX_SUPPLEMENTAL_CONTEXT_ROUNDS = 3
 MAX_SUPPLEMENTAL_TOOL_CALLS = 8
 MAX_PLANNER_FILES = 4
 MAX_PLANNER_FILE_CHARS = 12_000
@@ -20,6 +20,15 @@ def repository_context_questions(plan: dict) -> list[dict[str, str]]:
         item
         for item in plan.get("outstanding_items", [])
         if item.get("kind") == "repository_context" and item.get("question")
+    ]
+
+
+def user_decision_questions(plan: dict) -> list[dict[str, str]]:
+    if plan.get("status") != "needs_user_decision":
+        return []
+    return [
+        item for item in plan.get("outstanding_items", [])
+        if item.get("kind") == "user_decision" and item.get("question")
     ]
 
 
