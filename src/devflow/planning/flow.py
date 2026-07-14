@@ -11,7 +11,7 @@ from devflow.repository_context.config import SerenaContextConfig
 from devflow.repository_context.flow import serena_context_flow
 
 from .config import PlanningConfig
-from .artifacts import load_context_artifact, load_previous_plan
+from .artifacts import load_context_artifact, load_previous_plan, repository_head
 from .research import (
     MAX_SUPPLEMENTAL_CONTEXT_ROUNDS,
     MAX_INITIAL_CONTEXT_REFINEMENT_ROUNDS,
@@ -155,7 +155,12 @@ def _context_completion_choice(
         f"[P]roceed{' anyway' if incomplete else ''} to planning, or [S]top"
     )
     while True:
-        answer = input(f"Context is incomplete. {choices}? [S]: ").strip().lower()
+        state = (
+            "Context is incomplete"
+            if incomplete
+            else "Context is sufficient; additional research is optional"
+        )
+        answer = input(f"{state}. {choices}? [S]: ").strip().lower()
         selected = {
             "c": "continue", "continue": "continue",
             "h": "hint", "hint": "hint",
@@ -228,7 +233,10 @@ def _refine_incomplete_context(
     logger,
     supplied_hints: dict[str, str] | None = None,
 ) -> tuple[str, str | None]:
-    refinement_round = 0
+    refinement_round = sum(
+        1 for item in context_source.get("supplemental_rounds", [])
+        if item.get("phase") == "initial_context_refinement"
+    )
     supplied_hints = dict(supplied_hints or {})
     context_control = repository_context.get("context_control", {})
     if context_control.get("proceed_anyway"):
@@ -239,6 +247,11 @@ def _refine_incomplete_context(
         refined_path.write_text(json.dumps(repository_context, indent=2), encoding="utf-8")
         return "stop", str(refined_path.resolve())
     while True:
+        live_context_path = Path(run_dir) / "context-live.json"
+        live_context_path.write_text(
+            json.dumps(repository_context, indent=2), encoding="utf-8"
+        )
+        print(f"Accumulated context: {live_context_path.resolve()}")
         gaps = _repository_gaps(repository_context)
         incomplete = (
             repository_context.get("status") == "needs_repository_context"
@@ -334,6 +347,10 @@ def _refine_incomplete_context(
             "paths": result.get("paths", {}),
         })
         merge_context_refinement(repository_context, report)
+        live_context_path.write_text(
+            json.dumps(repository_context, indent=2), encoding="utf-8"
+        )
+        print(f"Updated accumulated context: {live_context_path.resolve()}")
         time.sleep(serena_config.model_request_min_interval_seconds)
 
 
@@ -627,6 +644,14 @@ def planning_flow(
             "repository_context": repository_context,
             "context_input_path": impact_artifact,
         }
+    impact_path = Path(run_dir) / "impact-context.json"
+    impact_path.write_text(json.dumps(repository_context, indent=2), encoding="utf-8")
+    (Path(run_dir) / "evidence.json").write_text(json.dumps({
+        "repo_path": str(Path(config.repo_path).resolve()),
+        "head_commit": repository_head(config.repo_path),
+        "artifact": "impact_context",
+    }, indent=2), encoding="utf-8")
+    context_source["impact_context_path"] = str(impact_path.resolve())
     architecture_status, architecture_path = _architecture_decision_gate(
         repository_context,
         run_dir=run_dir,
@@ -640,10 +665,8 @@ def planning_flow(
             "context_source": context_source,
             "repository_context": repository_context,
             "architecture_input_path": architecture_path,
+            "context_input_path": str(impact_path.resolve()),
         }
-    impact_path = Path(run_dir) / "impact-context.json"
-    impact_path.write_text(json.dumps(repository_context, indent=2), encoding="utf-8")
-    context_source["impact_context_path"] = str(impact_path.resolve())
     context_source.setdefault("human_gates", []).append({
         "gate": "initial_context_to_plan",
         "approved": True,
