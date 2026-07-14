@@ -1,6 +1,8 @@
 import json
+import subprocess
 import sys
 import time
+import webbrowser
 from pathlib import Path
 
 from prefect import flow, get_run_logger
@@ -142,12 +144,16 @@ def _context_completion_choice(*, can_continue: bool, auto_approve: bool) -> str
         return "continue" if can_continue else "stop"
     if not sys.stdin.isatty():
         return "stop"
-    choices = "[C]ontinue, add [H]int, [P]roceed anyway, or [S]top"
+    choices = (
+        "[C]ontinue context research, add a research [H]int, "
+        "[O]pen context for human review, [P]roceed anyway to planning, or [S]top"
+    )
     while True:
         answer = input(f"Context is incomplete. {choices}? [S]: ").strip().lower()
         selected = {
             "c": "continue", "continue": "continue",
             "h": "hint", "hint": "hint",
+            "o": "open", "open": "open", "review": "open",
             "p": "proceed", "proceed": "proceed",
             "s": "stop", "stop": "stop", "": "stop",
         }.get(answer)
@@ -156,6 +162,18 @@ def _context_completion_choice(*, can_continue: bool, auto_approve: bool) -> str
             continue
         if selected:
             return selected
+
+
+def _open_context_review(repository_context: dict, run_dir: str) -> str:
+    path = Path(run_dir) / "context-review.json"
+    path.write_text(json.dumps(repository_context, indent=2), encoding="utf-8")
+    resolved = path.resolve()
+    print(f"Context review: {resolved}")
+    try:
+        subprocess.Popen(["xdg-open", str(resolved)])
+    except OSError:
+        webbrowser.open(resolved.as_uri())
+    return str(resolved)
 
 
 def _collect_research_hints(gaps: list[dict], run_dir: str) -> tuple[list[str], str | None]:
@@ -206,7 +224,10 @@ def _refine_incomplete_context(
 ) -> tuple[str, str | None]:
     refinement_round = 0
     supplied_hints = dict(supplied_hints or {})
-    while repository_context.get("status") == "needs_repository_context":
+    while (
+        repository_context.get("status") == "needs_repository_context"
+        or _repository_gaps(repository_context)
+    ):
         gaps = _repository_gaps(repository_context)
         print("Repository context remains incomplete:")
         for index, item in enumerate(gaps, start=1):
@@ -228,6 +249,9 @@ def _refine_incomplete_context(
         if choice == "proceed":
             context_source["incomplete_context_override"] = True
             return "proceed", None
+        if choice == "open":
+            _open_context_review(repository_context, run_dir)
+            continue
         if choice == "stop":
             refined_path = Path(run_dir) / "context-refined.json"
             refined_path.write_text(json.dumps(repository_context, indent=2), encoding="utf-8")
@@ -431,11 +455,17 @@ def planning_flow(
                 "user_input_path": user_input_path,
             }
         _log_initial_context(repository_context, context_source, logger)
+    if completion != "proceed":
+        print(
+            "Repository context is ready for the planning gate: "
+            f"status={repository_context.get('status', 'unknown')}; "
+            f"repository_gaps={len(_repository_gaps(repository_context))}"
+        )
     if completion != "proceed" and not _confirm(
-        "Proceed to planning with this repository context?",
-        auto_approve=auto_approve,
-        logger=logger,
-    ):
+            "Proceed to the planning stage with this repository context?",
+            auto_approve=auto_approve,
+            logger=logger,
+        ):
         context_source.setdefault("human_gates", []).append({
             "gate": "initial_context_to_plan",
             "approved": False,
