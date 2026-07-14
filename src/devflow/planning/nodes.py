@@ -47,9 +47,13 @@ def _plan_quality_issue(plan: dict) -> str | None:
 
 
 def prepare_plan_context(state: PlanningState) -> dict:
+    approved_file_excerpts = state.get("approved_file_excerpts", {})
     return {
         "context_text": json.dumps(
-            state["repository_context"],
+            {
+                "report": state["repository_context"],
+                "context_approved_file_excerpts": approved_file_excerpts,
+            },
             indent=2,
             ensure_ascii=False,
         )
@@ -79,7 +83,9 @@ def make_plan_node(model, compact_retry_model, logger):
             f"{mode_instruction}\n"
             "Use repository context for factual claims. Do not invent paths, symbols, APIs, or "
             "current behavior. Repository evidence should identify a supplied file, symbol, or "
-            "evidence source. Design recommendations may be planner reasoning.\n"
+            "evidence source. Source excerpts are provided only for files approved by context; "
+            "use them directly for detailed schemas and signatures instead of requesting the "
+            "same repository facts again. Design recommendations may be planner reasoning.\n"
             "Each proposed change must name one file and describe its responsibility. Include "
             "tests and validation in verification and acceptance criteria.\n"
             "Make ordinary engineering decisions when repository evidence supports them. The "

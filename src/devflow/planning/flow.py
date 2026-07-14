@@ -11,8 +11,12 @@ from .config import PlanningConfig
 from .artifacts import load_context_artifact, load_previous_plan
 from .research import (
     MAX_SUPPLEMENTAL_CONTEXT_ROUNDS,
+    normalize_supplemental_report,
     question_key,
+    read_context_approved_files,
     repository_context_questions,
+    supplemental_prior_report,
+    supplemental_serena_config,
     supplemental_context_request,
 )
 from .tasks import (
@@ -32,6 +36,10 @@ def _planning_state(
         "request": request,
         "repo_path": config.repo_path,
         "repository_context": repository_context,
+        "approved_file_excerpts": read_context_approved_files(
+            config.repo_path,
+            repository_context,
+        ),
         "context_source": context_source,
         "previous_plan": previous_plan,
         "context_text": "",
@@ -196,8 +204,16 @@ def planning_flow(
             round_number,
         )
         logger.info("Sending %d targeted question(s) to Serena context", len(new_questions))
-        supplemental_result = serena_context_flow(supplemental_request, serena_config)
-        supplemental_report = supplemental_result["report"]
+        supplemental_result = serena_context_flow(
+            supplemental_request,
+            supplemental_serena_config(serena_config),
+            initial_report=supplemental_prior_report(repository_context),
+            active_questions=[item["question"] for item in new_questions],
+        )
+        supplemental_report = normalize_supplemental_report(
+            supplemental_result["report"],
+            new_questions,
+        )
         _log_supplemental_answers(supplemental_report, logger)
         report_key = json.dumps(
             supplemental_report,

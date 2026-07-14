@@ -5,6 +5,7 @@ class PlanningState(TypedDict):
     request: str
     repo_path: str
     repository_context: dict[str, Any]
+    approved_file_excerpts: dict[str, str]
     context_text: str
     context_source: dict[str, Any]
     previous_plan: dict[str, Any] | None

@@ -298,6 +298,7 @@ async def _explore_round(
     executed_signatures: set[str],
     tool_call_budget: int,
     is_final_round: bool,
+    active_questions: list[str] | None = None,
 ):
     try:
         from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -409,6 +410,18 @@ async def _explore_round(
         events,
         config.max_transcript_chars,
     )
+    supplemental_instruction = ""
+    if active_questions:
+        supplemental_instruction = (
+            "\nThis is targeted supplemental research. Treat PRIOR REPORT as established "
+            "evidence and report only answers to ACTIVE QUESTIONS. Copy each question exactly "
+            "into question_resolutions. For requests for an entire schema, signature, field "
+            "list, or configuration, provide the complete requested structure in resolution; "
+            "a file location alone is not an answer. Do not retain or investigate unrelated "
+            "missing context from prior work.\nACTIVE QUESTIONS\n"
+            + json.dumps(active_questions, ensure_ascii=False)
+            + "\n"
+        )
     report_prompt = (
         "Create an accumulated grounded repository-context report for the development request. "
         "Merge the prior report with this round, retaining useful earlier evidence. Include only "
@@ -429,7 +442,8 @@ async def _explore_round(
         "the question in missing_context rather than guessing or silently dropping it. "
         "Be concise. Do not copy source code, tool results, or the transcript into the report. "
         "Represent evidence only as short factual claims paired with file paths or symbol names. "
-        "Keep the complete report comfortably below the output-token limit.\n\n"
+        "Keep the complete report comfortably below the output-token limit.\n"
+        f"{supplemental_instruction}\n"
         f"DEVELOPMENT REQUEST\n{request}\n\n"
         f"PRIOR REPORT\n{prior_text}\n\n"
         f"CURRENT ROUND TRANSCRIPT\n{transcript_text}"
@@ -466,7 +480,14 @@ async def _explore_round(
     raise _SerenaReportGenerationError(attempt_errors)
 
 
-async def _explore_with_session(request: str, config: SerenaContextConfig, session):
+async def _explore_with_session(
+    request: str,
+    config: SerenaContextConfig,
+    session,
+    *,
+    initial_report: dict[str, Any] | None = None,
+    active_questions: list[str] | None = None,
+):
     try:
         from devflow.code_review.models import get_code_review_model
     except ImportError as error:
@@ -487,7 +508,7 @@ async def _explore_with_session(request: str, config: SerenaContextConfig, sessi
     all_events: list[dict[str, Any]] = []
     reports: list[dict[str, Any]] = []
     total_tool_calls = 0
-    report: dict[str, Any] | None = None
+    report: dict[str, Any] | None = initial_report
     report_errors: list[dict[str, Any]] = []
     request_limiter = _ModelRequestLimiter(
         config.model_request_min_interval_seconds,
@@ -515,6 +536,7 @@ async def _explore_with_session(request: str, config: SerenaContextConfig, sessi
             executed_signatures=executed_signatures,
             tool_call_budget=round_budget,
             is_final_round=is_final_round,
+            active_questions=active_questions,
         )
         total_tool_calls += calls
         all_events.extend(events)
@@ -549,6 +571,9 @@ async def _run_serena(
     request: str,
     config: SerenaContextConfig,
     stderr_log,
+    *,
+    initial_report: dict[str, Any] | None = None,
+    active_questions: list[str] | None = None,
 ):
     try:
         from mcp import ClientSession, StdioServerParameters
@@ -562,10 +587,22 @@ async def _run_serena(
     )
     async with stdio_client(parameters, errlog=stderr_log) as (read, write):
         async with ClientSession(read, write) as session:
-            return await _explore_with_session(request, config, session)
+            return await _explore_with_session(
+                request,
+                config,
+                session,
+                initial_report=initial_report,
+                active_questions=active_questions,
+            )
 
 
-def run_serena_context(request: str, config: SerenaContextConfig) -> dict[str, Any]:
+def run_serena_context(
+    request: str,
+    config: SerenaContextConfig,
+    *,
+    initial_report: dict[str, Any] | None = None,
+    active_questions: list[str] | None = None,
+) -> dict[str, Any]:
     root = Path(config.output_dir)
     run_dir = root / "runs" / datetime.now().strftime("%Y-%m-%d_%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -580,12 +617,19 @@ def run_serena_context(request: str, config: SerenaContextConfig) -> dict[str, A
                 total_tool_calls,
                 report_errors,
                 request_limiter,
-            ) = asyncio.run(_run_serena(request, config, stderr_log))
+            ) = asyncio.run(_run_serena(
+                request,
+                config,
+                stderr_log,
+                initial_report=initial_report,
+                active_questions=active_questions,
+            ))
     except Exception as error:
         diagnostic_path = run_dir / "serena-error.json"
         diagnostic_path.write_text(
             json.dumps({
                 "request": request,
+                "active_questions": active_questions or [],
                 "schema_version": SERENA_SCHEMA_VERSION,
                 "structured_output_method": SERENA_STRUCTURED_OUTPUT_METHOD,
                 "exception_type": type(error).__name__,
@@ -625,6 +669,7 @@ def run_serena_context(request: str, config: SerenaContextConfig) -> dict[str, A
     evidence_path.write_text(
         json.dumps({
             "request": request,
+            "active_questions": active_questions or [],
             "repo_path": config.repo_path,
             "head_commit": subprocess.run(
                 ["git", "rev-parse", "HEAD"],
