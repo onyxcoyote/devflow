@@ -47,6 +47,9 @@ devflow plan \
   --from-plan /path/to/plan.json \
   "request"
 
+# Resume targeted context research after filling in context-input.json
+devflow plan --context-hints /path/to/context-input.json "request"
+
 # Propose edits from an approved plan, then ask before applying them
 devflow implement /path/to/plan.json
 

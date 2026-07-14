@@ -94,6 +94,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--answers",
         help="JSON answers file created by a previous deferred planning run.",
     )
+    plan.add_argument(
+        "--context-hints",
+        help="JSON research-hints file created by a stopped context run.",
+    )
     serena = subparsers.add_parser(
         "serena-context",
         help="Discover grounded repository context with Serena.",
@@ -308,6 +312,7 @@ def _run_plan(args: argparse.Namespace) -> int:
                 run_dir=str(run_dir),
                 auto_approve=args.yes,
                 answers_path=args.answers,
+                context_hints_path=args.context_hints,
             )
         except SerenaContextRunError as error:
             return _handle_serena_error(error)
@@ -321,6 +326,10 @@ def _run_plan(args: argparse.Namespace) -> int:
             if result.get("user_input_path"):
                 print(f"User input: {result['user_input_path']}")
                 print("Fill in the answers and rerun plan with --answers.")
+            if result.get("context_input_path"):
+                print(f"Context input/artifact: {result['context_input_path']}")
+                if str(result["context_input_path"]).endswith("context-input.json"):
+                    print("Fill in its hints and rerun plan with --context-hints.")
             return 0
         plan = result["plan"]
         print()

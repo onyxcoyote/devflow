@@ -6,6 +6,7 @@ from devflow.planning.research import (
     apply_user_answers_to_context,
     context_user_questions,
     normalize_supplemental_report,
+    merge_context_refinement,
     read_context_approved_files,
     question_key,
     repository_context_questions,
@@ -133,6 +134,23 @@ class PlanningFlowTests(unittest.TestCase):
         self.assertEqual(normalized["missing_context"][0]["description"], "Where is Z handled when Y occurs?")
         self.assertIn("Y is detected", str(normalized["research_checkpoints"]))
         self.assertTrue(supplemental_progress_signature(normalized))
+
+    def test_context_refinement_replaces_unresolved_set(self):
+        context = {
+            "status": "needs_repository_context",
+            "missing_context": [{"kind": "repository", "description": "Old gap"}],
+            "evidence": [],
+            "research_checkpoints": [],
+        }
+        merge_context_refinement(context, {
+            "status": "sufficient",
+            "missing_context": [],
+            "evidence": [{"claim": "Data originates in combat.", "source": "combat.ts"}],
+            "research_checkpoints": [],
+        })
+        self.assertEqual(context["status"], "sufficient")
+        self.assertEqual(context["missing_context"], [])
+        self.assertEqual(context["evidence"][0]["source"], "combat.ts")
 
     def test_question_keys_ignore_case_spacing_and_terminal_punctuation(self):
         self.assertEqual(

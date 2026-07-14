@@ -20,6 +20,7 @@ from devflow.repository_context.serena import (
     _tool_result_text,
     _ModelRequestLimiter,
     _confirm_additional_context_round,
+    _print_context_progress,
     _references_generated_artifacts,
     run_serena_context,
 )
@@ -206,6 +207,17 @@ class SerenaContinuationTests(unittest.TestCase):
         rendered = "\n".join(call.args[0] for call in output.call_args_list)
         self.assertIn("Find Schema X", rendered)
         self.assertNotIn("Choose compatibility", rendered)
+
+    def test_prints_existing_resolution_without_model_call(self):
+        report = complete_report(question_resolutions=[{
+            "question": "Where does data originate?",
+            "resolution": "CombatService calculates it.",
+            "source": "combat.ts:CombatService",
+        }])
+        with patch("builtins.print") as output:
+            _print_context_progress(report)
+        rendered = "\n".join(call.args[0] for call in output.call_args_list)
+        self.assertIn("CombatService calculates it", rendered)
 
 
 class SerenaModelRequestLimiterTests(unittest.IsolatedAsyncioTestCase):

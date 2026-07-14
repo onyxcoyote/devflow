@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from devflow.repository_context.config import SerenaContextConfig
 
 
 MAX_SUPPLEMENTAL_CONTEXT_ROUNDS = 3
+MAX_INITIAL_CONTEXT_REFINEMENT_ROUNDS = 3
 MAX_SUPPLEMENTAL_TOOL_CALLS = 8
 MAX_PLANNER_FILES = 4
 MAX_PLANNER_FILE_CHARS = 12_000
@@ -215,6 +217,43 @@ def supplemental_progress_signature(report: dict) -> tuple:
         )
         for item in report.get("research_checkpoints", [])
     ))
+
+
+def merge_context_refinement(context: dict, report: dict) -> None:
+    """Merge a targeted report while making its unresolved set authoritative."""
+    for field in ("relevant_files", "relevant_symbols", "evidence", "question_resolutions"):
+        existing = context.setdefault(field, [])
+        seen = {json.dumps(item, sort_keys=True, default=str) for item in existing}
+        for item in report.get(field, []):
+            key = json.dumps(item, sort_keys=True, default=str)
+            if key not in seen:
+                existing.append(item)
+                seen.add(key)
+
+    checkpoints = {
+        (
+            question_key(item.get("original_question", "")),
+            question_key(item.get("subquestion", "")),
+        ): item
+        for item in context.get("research_checkpoints", [])
+    }
+    for item in report.get("research_checkpoints", []):
+        checkpoints[(
+            question_key(item.get("original_question", "")),
+            question_key(item.get("subquestion", "")),
+        )] = item
+    context["research_checkpoints"] = list(checkpoints.values())
+    retained = [
+        item for item in context.get("missing_context", [])
+        if item.get("kind") != "repository"
+    ]
+    context["missing_context"] = [*retained, *report.get("missing_context", [])]
+    if any(item.get("kind") == "repository" for item in context["missing_context"]):
+        context["status"] = "needs_repository_context"
+    elif any(item.get("kind") == "user_decision" for item in context["missing_context"]):
+        context["status"] = "needs_user_decision"
+    else:
+        context["status"] = report.get("status", context.get("status"))
 
 
 def context_approved_paths(repository_context: dict) -> list[str]:

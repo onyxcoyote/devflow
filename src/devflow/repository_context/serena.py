@@ -192,6 +192,29 @@ def _confirm_additional_context_round(
     return answer.strip().lower() in {"y", "yes"}
 
 
+def _print_context_progress(report: dict[str, Any]) -> None:
+    def concise(value: Any) -> str:
+        text = str(value)
+        return text[:500] + ("..." if len(text) > 500 else "")
+
+    resolutions = report.get("question_resolutions", [])
+    if resolutions:
+        print("Resolved context:")
+    for item in resolutions:
+        print(f"  - {concise(item.get('question', ''))}: {concise(item.get('resolution', ''))}")
+        print(f"    Source: {item.get('source', '')}")
+    for checkpoint in report.get("research_checkpoints", []):
+        label = "Resolved" if checkpoint.get("status") == "resolved" else "Partial"
+        print(f"{label}: {checkpoint.get('subquestion', '')}")
+        detail = checkpoint.get("answer") or checkpoint.get("partial_findings")
+        if detail:
+            print(f"  {concise(detail)}")
+        if checkpoint.get("sources_inspected"):
+            print(f"  Inspected: {', '.join(checkpoint['sources_inspected'])}")
+        if checkpoint.get("next_investigation"):
+            print(f"  Next: {checkpoint['next_investigation']}")
+
+
 def _langchain_tools(mcp_tools) -> list[dict[str, Any]]:
     tools = []
     for tool in mcp_tools:
@@ -597,6 +620,7 @@ async def _explore_with_session(
             f"Round {round_number}: {calls} tool calls "
             f"({total_tool_calls}/{config.max_total_tool_calls} total)"
         )
+        _print_context_progress(report)
         continue_rounds = _should_continue(
             report,
             round_number=round_number,

@@ -12,9 +12,11 @@ from .config import PlanningConfig
 from .artifacts import load_context_artifact, load_previous_plan
 from .research import (
     MAX_SUPPLEMENTAL_CONTEXT_ROUNDS,
+    MAX_INITIAL_CONTEXT_REFINEMENT_ROUNDS,
     apply_user_answers_to_context,
     context_user_questions,
     normalize_supplemental_report,
+    merge_context_refinement,
     question_key,
     read_context_approved_files,
     repository_context_questions,
@@ -128,6 +130,157 @@ def _log_initial_context(report: dict, context_source: dict, logger) -> None:
         logger.info("Initial context artifact: %s", artifact)
 
 
+def _repository_gaps(report: dict) -> list[dict]:
+    return [
+        item for item in report.get("missing_context", [])
+        if item.get("kind") == "repository"
+    ]
+
+
+def _context_completion_choice(*, can_continue: bool, auto_approve: bool) -> str:
+    if auto_approve:
+        return "continue" if can_continue else "stop"
+    if not sys.stdin.isatty():
+        return "stop"
+    choices = "[C]ontinue, add [H]int, [P]roceed anyway, or [S]top"
+    while True:
+        answer = input(f"Context is incomplete. {choices}? [S]: ").strip().lower()
+        selected = {
+            "c": "continue", "continue": "continue",
+            "h": "hint", "hint": "hint",
+            "p": "proceed", "proceed": "proceed",
+            "s": "stop", "stop": "stop", "": "stop",
+        }.get(answer)
+        if selected == "continue" and not can_continue:
+            print("The bounded context-refinement rounds are exhausted.")
+            continue
+        if selected:
+            return selected
+
+
+def _collect_research_hints(gaps: list[dict], run_dir: str) -> tuple[list[str], str | None]:
+    hints = []
+    for item in gaps:
+        hint = input(
+            f"Optional search hint for: {item.get('description', '')}\n> "
+        ).strip()
+        hints.append(hint)
+    if any(hints):
+        return hints, None
+    path = Path(run_dir) / "context-input.json"
+    path.write_text(json.dumps({
+        "research_hints": [
+            {"question": item.get("description", ""), "hint": ""}
+            for item in gaps
+        ]
+    }, indent=2), encoding="utf-8")
+    print(f"Context hints: {path.resolve()}")
+    return hints, str(path.resolve())
+
+
+def _load_research_hints(path: str | None) -> dict[str, str]:
+    if path is None:
+        return {}
+    hint_path = Path(path).expanduser().resolve()
+    values = json.loads(hint_path.read_text(encoding="utf-8"))
+    items = values.get("research_hints", []) if isinstance(values, dict) else values
+    if not isinstance(items, list):
+        raise ValueError("Context hints file must contain a research_hints list")
+    return {
+        question_key(str(item["question"])): str(item["hint"])
+        for item in items
+        if isinstance(item, dict) and item.get("question") and item.get("hint")
+    }
+
+
+def _refine_incomplete_context(
+    request: str,
+    repository_context: dict,
+    context_source: dict,
+    serena_config: SerenaContextConfig,
+    *,
+    run_dir: str,
+    auto_approve: bool,
+    logger,
+    supplied_hints: dict[str, str] | None = None,
+) -> tuple[str, str | None]:
+    refinement_round = 0
+    supplied_hints = dict(supplied_hints or {})
+    while repository_context.get("status") == "needs_repository_context":
+        gaps = _repository_gaps(repository_context)
+        print("Repository context remains incomplete:")
+        for index, item in enumerate(gaps, start=1):
+            print(f"  {index}. {item.get('description', '')}")
+            if item.get("suggested_action"):
+                print(f"     Next: {item['suggested_action']}")
+        can_continue = bool(gaps) and refinement_round < MAX_INITIAL_CONTEXT_REFINEMENT_ROUNDS
+        matching_hints = [
+            supplied_hints.get(question_key(item.get("description", "")), "")
+            for item in gaps
+        ]
+        choice = (
+            "hint" if any(matching_hints) and can_continue
+            else _context_completion_choice(
+                can_continue=can_continue,
+                auto_approve=auto_approve,
+            )
+        )
+        if choice == "proceed":
+            context_source["incomplete_context_override"] = True
+            return "proceed", None
+        if choice == "stop":
+            refined_path = Path(run_dir) / "context-refined.json"
+            refined_path.write_text(json.dumps(repository_context, indent=2), encoding="utf-8")
+            return "stop", str(refined_path.resolve())
+
+        hints = matching_hints
+        if choice == "hint":
+            if not any(hints):
+                hints, hint_path = _collect_research_hints(gaps, run_dir)
+                if hint_path:
+                    return "stop", hint_path
+            supplied_hints.clear()
+        refinement_round += 1
+        questions = []
+        for item, hint in zip(gaps, hints):
+            action = item.get("suggested_action", "")
+            if hint:
+                action += f" User search hint (not evidence): {hint}"
+            questions.append({
+                "question": item.get("description", ""),
+                "impact": "This repository gap prevents complete implementation context.",
+                "suggested_action": action,
+            })
+        logger.info(
+            "Running targeted initial-context refinement %d/%d for %d gap(s)",
+            refinement_round,
+            MAX_INITIAL_CONTEXT_REFINEMENT_ROUNDS,
+            len(questions),
+        )
+        result = serena_context_flow(
+            supplemental_context_request(request, questions, refinement_round),
+            supplemental_serena_config(serena_config),
+            initial_report=supplemental_prior_report(repository_context),
+            active_questions=[item["question"] for item in questions],
+        )
+        report = normalize_supplemental_report(result["report"], questions)
+        _log_supplemental_answers(report, logger)
+        repository_context.setdefault("supplemental_rounds", []).append({
+            "phase": "initial_context_refinement",
+            "round": refinement_round,
+            "questions": questions,
+            "report": report,
+        })
+        context_source.setdefault("supplemental_rounds", []).append({
+            "phase": "initial_context_refinement",
+            "round": refinement_round,
+            "paths": result.get("paths", {}),
+        })
+        merge_context_refinement(repository_context, report)
+        time.sleep(serena_config.model_request_min_interval_seconds)
+    return "complete", None
+
+
 def _load_user_answers(path: str | None) -> list[dict[str, str]]:
     if path is None:
         return []
@@ -190,6 +343,7 @@ def planning_flow(
     run_dir: str | None = None,
     auto_approve: bool = False,
     answers_path: str | None = None,
+    context_hints_path: str | None = None,
 ) -> dict:
     logger = get_run_logger()
     if run_dir is None:
@@ -230,11 +384,33 @@ def planning_flow(
     repository_context.setdefault("supplemental_rounds", [])
     context_source.setdefault("supplemental_rounds", [])
     supplied_answers = _load_user_answers(answers_path)
+    supplied_hints = _load_research_hints(context_hints_path)
     if supplied_answers:
         apply_user_answers_to_context(repository_context, supplied_answers)
         context_source["user_answers_path"] = str(Path(answers_path).resolve())
+    if context_hints_path:
+        context_source["context_hints_path"] = str(Path(context_hints_path).resolve())
 
     _log_initial_context(repository_context, context_source, logger)
+    completion, completion_artifact = _refine_incomplete_context(
+        request,
+        repository_context,
+        context_source,
+        serena_config,
+        run_dir=run_dir,
+        auto_approve=auto_approve,
+        logger=logger,
+        supplied_hints=supplied_hints,
+    )
+    if completion == "stop":
+        logger.info("Planning stopped with incomplete repository context")
+        return {
+            "stopped": True,
+            "reason": "repository_context_incomplete",
+            "context_source": context_source,
+            "repository_context": repository_context,
+            "context_input_path": completion_artifact,
+        }
     context_questions = context_user_questions(repository_context)
     if context_questions:
         answers, user_input_path = _collect_user_answers(
@@ -255,7 +431,7 @@ def planning_flow(
                 "user_input_path": user_input_path,
             }
         _log_initial_context(repository_context, context_source, logger)
-    if not _confirm(
+    if completion != "proceed" and not _confirm(
         "Proceed to planning with this repository context?",
         auto_approve=auto_approve,
         logger=logger,
