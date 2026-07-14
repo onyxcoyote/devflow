@@ -21,6 +21,7 @@ from .research import (
     supplemental_prior_report,
     supplemental_serena_config,
     supplemental_context_request,
+    supplemental_progress_signature,
     user_decision_questions,
 )
 from .tasks import (
@@ -94,6 +95,21 @@ def _log_supplemental_answers(report: dict, logger) -> None:
             item.get("description", ""),
             item.get("suggested_action", ""),
         )
+    checkpoints = report.get("research_checkpoints", [])
+    if checkpoints:
+        logger.info("Supplemental research checkpoints (%d)", len(checkpoints))
+    for checkpoint in checkpoints:
+        logger.info(
+            "Checkpoint %s: %s",
+            checkpoint.get("status", "unknown"),
+            checkpoint.get("subquestion", ""),
+        )
+        if checkpoint.get("partial_findings"):
+            logger.info("  Progress: %s", checkpoint["partial_findings"])
+        if checkpoint.get("sources_inspected"):
+            logger.info("  Inspected: %s", ", ".join(checkpoint["sources_inspected"]))
+        if checkpoint.get("next_investigation"):
+            logger.info("  Next: %s", checkpoint["next_investigation"])
 
 
 def _log_initial_context(report: dict, context_source: dict, logger) -> None:
@@ -272,6 +288,7 @@ def planning_flow(
     )
     seen_questions = set()
     seen_supplemental_reports = set()
+    previous_progress_signature = ()
     planning_rounds = []
     supplemental_rounds_completed = 0
     user_input_path = None
@@ -361,6 +378,10 @@ def planning_flow(
             new_questions,
         )
         _log_supplemental_answers(supplemental_report, logger)
+        progress_signature = supplemental_progress_signature(supplemental_report)
+        made_progress = bool(progress_signature) and progress_signature != previous_progress_signature
+        if progress_signature:
+            previous_progress_signature = progress_signature
         report_key = json.dumps(
             supplemental_report,
             sort_keys=True,
@@ -383,6 +404,11 @@ def planning_flow(
             "paths": supplemental_result.get("paths", {}),
         })
         supplemental_rounds_completed += 1
+        if not made_progress and supplemental_report.get("missing_context"):
+            logger.warning(
+                "Stopping supplemental context: no checkpoint progress was recorded"
+            )
+            break
         if not _confirm(
             "Proceed to planning with these supplemental answers?",
             auto_approve=auto_approve,

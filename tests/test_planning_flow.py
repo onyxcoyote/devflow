@@ -11,6 +11,7 @@ from devflow.planning.research import (
     repository_context_questions,
     supplemental_prior_report,
     supplemental_context_request,
+    supplemental_progress_signature,
     user_decision_questions,
 )
 
@@ -104,6 +105,7 @@ class PlanningFlowTests(unittest.TestCase):
             "status": "needs_user_decision",
             "question_resolutions": [],
             "missing_context": [{"description": "Old unrelated question"}],
+            "research_checkpoints": [],
         }, questions)
 
         self.assertEqual(normalized["status"], "needs_repository_context")
@@ -112,6 +114,25 @@ class PlanningFlowTests(unittest.TestCase):
             "What fields are in Schema X?",
         )
         self.assertNotIn("Old unrelated question", str(normalized))
+
+    def test_preserves_partial_subquestion_progress(self):
+        question = "How does X work, and if Y occurs, where is Z handled?"
+        normalized = normalize_supplemental_report({
+            "question_resolutions": [],
+            "research_checkpoints": [{
+                "original_question": question,
+                "subquestion": "Where is Z handled when Y occurs?",
+                "status": "unresolved",
+                "answer": "",
+                "partial_findings": "Y is detected in service.py.",
+                "sources_inspected": ["service.py:detect_y"],
+                "next_investigation": "Trace detect_y callers.",
+            }],
+        }, [{"question": question, "suggested_action": "Trace the flow."}])
+
+        self.assertEqual(normalized["missing_context"][0]["description"], "Where is Z handled when Y occurs?")
+        self.assertIn("Y is detected", str(normalized["research_checkpoints"]))
+        self.assertTrue(supplemental_progress_signature(normalized))
 
     def test_question_keys_ignore_case_spacing_and_terminal_punctuation(self):
         self.assertEqual(

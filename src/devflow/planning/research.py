@@ -111,7 +111,7 @@ def supplemental_context_request(
 
 def supplemental_prior_report(repository_context: dict) -> dict:
     """Retain established evidence without carrying old research questions forward."""
-    return {
+    prior = {
         key: value
         for key, value in repository_context.items()
         if key not in {"missing_context", "question_resolutions", "supplemental_rounds"}
@@ -119,6 +119,12 @@ def supplemental_prior_report(repository_context: dict) -> dict:
         "missing_context": [],
         "question_resolutions": [],
     }
+    prior.setdefault("research_checkpoints", [])
+    for supplemental in repository_context.get("supplemental_rounds", []):
+        report = supplemental.get("report", {})
+        for key in ("relevant_files", "relevant_symbols", "evidence", "research_checkpoints"):
+            prior.setdefault(key, []).extend(report.get(key, []))
+    return prior
 
 
 def supplemental_serena_config(config: SerenaContextConfig) -> SerenaContextConfig:
@@ -153,7 +159,31 @@ def normalize_supplemental_report(
             })
             resolved_keys.add(key)
 
+    checkpoints = [
+        checkpoint for checkpoint in report.get("research_checkpoints", [])
+        if question_key(checkpoint.get("original_question", "")) in requested
+    ]
+    unresolved_checkpoints = [
+        checkpoint for checkpoint in checkpoints
+        if checkpoint.get("status") == "unresolved"
+    ]
     unresolved = [
+        {
+            "kind": "repository",
+            "description": checkpoint["subquestion"],
+            "suggested_action": (
+                checkpoint.get("next_investigation")
+                or "Continue the targeted repository investigation."
+            ),
+            "related_files": [],
+            "related_symbols": checkpoint.get("sources_inspected", []),
+        }
+        for checkpoint in unresolved_checkpoints
+    ]
+    checkpointed_questions = {
+        question_key(item.get("original_question", "")) for item in checkpoints
+    }
+    unresolved.extend(
         {
             "kind": "repository",
             "description": item["question"],
@@ -162,14 +192,29 @@ def normalize_supplemental_report(
             "related_symbols": [],
         }
         for key, item in requested.items()
-        if key not in resolved_keys
-    ]
+        if key not in resolved_keys and key not in checkpointed_questions
+    )
     return {
         **report,
         "status": "sufficient" if not unresolved else "needs_repository_context",
         "question_resolutions": resolutions,
         "missing_context": unresolved,
+        "research_checkpoints": checkpoints,
     }
+
+
+def supplemental_progress_signature(report: dict) -> tuple:
+    return tuple(sorted(
+        (
+            question_key(item.get("original_question", "")),
+            question_key(item.get("subquestion", "")),
+            item.get("status", ""),
+            item.get("answer", ""),
+            item.get("partial_findings", ""),
+            tuple(item.get("sources_inspected", [])),
+        )
+        for item in report.get("research_checkpoints", [])
+    ))
 
 
 def context_approved_paths(repository_context: dict) -> list[str]:

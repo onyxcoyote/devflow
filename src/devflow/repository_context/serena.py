@@ -79,6 +79,22 @@ class MissingContextItem(SerenaSchema):
     )
 
 
+class ResearchCheckpoint(SerenaSchema):
+    original_question: str = Field(description="The exact active planner question.")
+    subquestion: str = Field(description="One independently answerable part of the question.")
+    status: Literal["resolved", "unresolved"]
+    answer: str = Field(description="Grounded answer, or an empty string when unresolved.")
+    partial_findings: str = Field(
+        description="Useful grounded progress, or an empty string when none."
+    )
+    sources_inspected: list[str] = Field(
+        description="Inspected repository paths or symbols; return [] if none."
+    )
+    next_investigation: str = Field(
+        description="Specific next retrieval action, or an empty string when resolved."
+    )
+
+
 class SerenaContextReport(SerenaSchema):
     status: Literal[
         "sufficient",
@@ -103,6 +119,12 @@ class SerenaContextReport(SerenaSchema):
     )
     missing_context: list[MissingContextItem] = Field(
         description="Maximum 10 missing-context items; return [] if empty."
+    )
+    research_checkpoints: list[ResearchCheckpoint] = Field(
+        description=(
+            "Targeted supplemental research progress by subquestion; return [] for ordinary "
+            "context discovery."
+        )
     )
 
 
@@ -438,7 +460,11 @@ async def _explore_round(
         supplemental_instruction = (
             "\nThis is targeted supplemental research. Treat PRIOR REPORT as established "
             "evidence and report only answers to ACTIVE QUESTIONS. Copy each question exactly "
-            "into question_resolutions. For requests for an entire schema, signature, field "
+            "into question_resolutions. Decompose compound or conditional questions into "
+            "independently answerable research_checkpoints. Preserve established checkpoint "
+            "answers from PRIOR REPORT and investigate only unresolved subquestions. Record "
+            "partial_findings, sources_inspected, and one specific next_investigation when a "
+            "subquestion remains unresolved. For requests for an entire schema, signature, field "
             "list, or configuration, provide the complete requested structure in resolution; "
             "a file location alone is not an answer. Do not retain or investigate unrelated "
             "missing context from prior work.\nACTIVE QUESTIONS\n"

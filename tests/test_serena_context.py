@@ -34,6 +34,7 @@ def complete_report(**overrides):
         "evidence": [],
         "question_resolutions": [],
         "missing_context": [],
+        "research_checkpoints": [],
     }
     values.update(overrides)
     return values
