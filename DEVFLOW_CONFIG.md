@@ -66,6 +66,11 @@ The schema requires every field and rejects unknown fields for broad provider co
 Text-length and list-size limits are model guidance rather than provider-enforced JSON Schema
 constraints; the output token limits above remain enforced by the model client.
 
+When planning reports `needs_repository_context`, Devflow sends its repository questions to
+Serena for up to two targeted supplemental context rounds. Each question and handoff is shown in
+the flow log. Repeated questions or duplicate supplemental evidence stop the loop early; product
+and architecture decisions are not sent to Serena.
+
 Run a read-only plan with:
 
 ```bash
