@@ -10,9 +10,25 @@ from devflow.repository_context.config import SerenaContextConfig
 MAX_SUPPLEMENTAL_CONTEXT_ROUNDS = 3
 MAX_INITIAL_CONTEXT_REFINEMENT_ROUNDS = 3
 MAX_SUPPLEMENTAL_TOOL_CALLS = 8
-MAX_PLANNER_FILES = 8
+MAX_PLANNER_FILES = 6
 MAX_PLANNER_FILE_CHARS = 20_000
-MAX_PLANNER_SOURCE_CHARS = 100_000
+MAX_PLANNER_SOURCE_CHARS = 60_000
+
+
+def flatten_context_for_planning(report: dict) -> dict:
+    """Remove recursively embedded round reports while preserving current conclusions."""
+    flattened = {key: value for key, value in report.items() if key != "supplemental_rounds"}
+    flattened["supplemental_round_summaries"] = [
+        {
+            "phase": item.get("phase"),
+            "round": item.get("round"),
+            "questions": item.get("questions", []),
+            "status": item.get("report", {}).get("status"),
+            "remaining_gaps": len(item.get("report", {}).get("missing_context", [])),
+        }
+        for item in report.get("supplemental_rounds", [])
+    ]
+    return flattened
 
 
 def repository_context_questions(plan: dict) -> list[dict[str, str]]:

@@ -22,6 +22,8 @@ class SerenaContextConfig:
     model_request_min_interval_seconds: float
     model: ModelConfig
     config_sources: tuple[str, ...]
+    context_input_target_tokens: int = 48_000
+    max_round_tool_result_chars: int = 100_000
 
 
 def load_serena_context_config(
@@ -87,4 +89,10 @@ def load_serena_context_config(
         ),
         model=shared.model,
         config_sources=shared.config_sources,
+        context_input_target_tokens=max(
+            8_000, int(settings.get("context_input_target_tokens", 48_000))
+        ),
+        max_round_tool_result_chars=max(
+            20_000, int(settings.get("max_round_tool_result_chars", 100_000))
+        ),
     )

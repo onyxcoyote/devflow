@@ -8,6 +8,8 @@ max_command_output_chars = 12000
 save_model_exchange = false
 
 [serena]
+context_input_target_tokens = 48000
+max_round_tool_result_chars = 100000
 output_dir = ".devflow/serena-context"
 command = "serena"
 args = ["start-mcp-server", "--context", "ide", "--project", "{repo}"]

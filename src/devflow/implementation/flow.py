@@ -178,6 +178,20 @@ def implementation_flow(
     plan, resolved_plan_path = _load_plan(plan_path, config.repo_path)
     run_dir = Path(config.repo_path) / ".devflow" / "implementations" / "runs" / datetime.now().strftime("%Y-%m-%d_%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=False)
+    print("Baseline stage: configured pre-build checks")
+    baseline_results = [
+        _run_command(command, config.repo_path, config.max_command_output_chars)
+        for command in config.check_commands
+    ]
+    baseline_path = run_dir / "baseline.json"
+    baseline_path.write_text(json.dumps({
+        "checks": baseline_results,
+        "passed": all(item["passed"] for item in baseline_results),
+    }, indent=2), encoding="utf-8")
+    print(
+        f"Baseline: {'passed' if all(item['passed'] for item in baseline_results) else 'failed'} "
+        f"({len(baseline_results)} checks); {baseline_path.resolve()}"
+    )
     impact_context = _load_impact_context(resolved_plan_path)
     planned_paths, _ = _planned_sources(plan, config.repo_path)
     additional_paths = [
@@ -307,6 +321,7 @@ def implementation_flow(
         "planned_paths": planned_paths,
         "proposal_status": proposal["status"],
         "applied": applied,
+        "baseline_results": baseline_results,
         "command_results": command_results,
         "validation_error": (
             {"message": str(validation_error), "details": validation_error.details}
@@ -323,6 +338,7 @@ def implementation_flow(
         "proposal": str(proposal_path.resolve()),
         "evidence": str(evidence_path.resolve()),
         "preflight": str(preflight_path.resolve()),
+        "baseline": str(baseline_path.resolve()),
     }
     if diagnostic_path is not None:
         paths["validation_error"] = str(diagnostic_path.resolve())

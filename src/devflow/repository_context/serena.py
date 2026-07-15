@@ -120,6 +120,9 @@ class ImpactChain(SerenaSchema):
     closure_gaps: list[str] = Field(
         description="Material untraced portions of the flow; return [] only when impact is closed."
     )
+    potential_side_effects: list[str] = Field(
+        description="Behavioral, state, persistence, or compatibility side effects; return [] if none."
+    )
 
 
 class ArchitectureDecisionCandidate(SerenaSchema):
@@ -187,12 +190,20 @@ class _SerenaReportGenerationError(RuntimeError):
 
 
 class _ModelRequestLimiter:
-    def __init__(self, minimum_interval_seconds: float):
+    def __init__(self, minimum_interval_seconds: float, input_target_tokens: int | None = None):
         self.minimum_interval_seconds = minimum_interval_seconds
         self.last_started_at: float | None = None
         self.request_count = 0
         self.wait_count = 0
         self.total_wait_seconds = 0.0
+        self.input_target_tokens = input_target_tokens
+        self.estimated_input_tokens = 0
+        self.actual_input_tokens = 0
+        self.actual_output_tokens = 0
+
+    @staticmethod
+    def _estimated_tokens(value: Any) -> int:
+        return max(1, int(len(str(value)) / 3.5))
 
     async def invoke(self, model, messages, purpose: str):
         if not 10 <= len(purpose) <= 50:
@@ -209,8 +220,22 @@ class _ModelRequestLimiter:
         self.last_started_at = perf_counter()
         self.request_count += 1
         print(f"LLM call {self.request_count}: {purpose}")
+        estimated = self._estimated_tokens(messages)
+        self.estimated_input_tokens += estimated
+        if self.input_target_tokens is not None:
+            print(
+                f"  Estimated context: {estimated:,}/{self.input_target_tokens:,} input tokens"
+            )
         try:
-            return await model.ainvoke(messages)
+            response = await model.ainvoke(messages)
+            usage = getattr(response, "usage_metadata", None) or {}
+            self.actual_input_tokens += int(
+                usage.get("input_tokens") or usage.get("prompt_tokens") or 0
+            )
+            self.actual_output_tokens += int(
+                usage.get("output_tokens") or usage.get("completion_tokens") or 0
+            )
+            return response
         except Exception as error:
             print(f"LLM ERROR ({purpose}): {type(error).__name__}: {error}")
             raise
@@ -514,6 +539,7 @@ async def _explore_round(
     ]
     events: list[dict[str, Any]] = []
     calls_attempted = 0
+    tool_result_chars = 0
     active_budget = tool_call_budget
     stop_round = False
     live_transcript_path = live_transcript_path or Path("serena-live-transcript.json")
@@ -558,6 +584,16 @@ async def _explore_round(
             if name not in READ_ONLY_SERENA_TOOLS:
                 continue
             arguments = call.get("args", {})
+            argument_hint = next(
+                (str(arguments[key]) for key in (
+                    "relative_path", "path", "name_path", "name", "substring_pattern"
+                ) if arguments.get(key)),
+                "",
+            )
+            print(
+                f"Serena tool {calls_attempted + 1}/{max_tool_call_budget}: "
+                f"{name}{' ' + argument_hint[:120] if argument_hint else ''}"
+            )
             if _references_generated_artifacts(arguments):
                 result_text = (
                     "Devflow did not execute this call because .devflow contains generated "
@@ -594,7 +630,21 @@ async def _explore_round(
                 started_at = perf_counter()
                 result = await session.call_tool(name, arguments=arguments)
                 elapsed = round(perf_counter() - started_at, 3)
-                result_text = _tool_result_text(result, config.max_tool_result_chars)
+                remaining_chars = max(
+                    0, config.max_round_tool_result_chars - tool_result_chars
+                )
+                if remaining_chars == 0:
+                    events.append({
+                        "round": round_number,
+                        "tool_result_budget_reached": True,
+                        "tool_result_chars": tool_result_chars,
+                    })
+                    stop_round = True
+                    break
+                result_text = _tool_result_text(
+                    result, min(config.max_tool_result_chars, remaining_chars)
+                )
+                tool_result_chars += len(result_text)
                 events.append({
                     "round": round_number,
                     "tool": name,
@@ -758,6 +808,7 @@ async def _explore_with_session(
     report_errors: list[dict[str, Any]] = []
     request_limiter = _ModelRequestLimiter(
         config.model_request_min_interval_seconds,
+        config.context_input_target_tokens,
     )
 
     for round_number in range(1, config.max_rounds + 1):
@@ -876,6 +927,22 @@ def run_serena_context(
     gate_between_rounds: bool = False,
     auto_approve: bool = False,
 ) -> dict[str, Any]:
+    repo_path = getattr(config, "repo_path", ".")
+
+    def git_output(*args: str) -> str | None:
+        result = subprocess.run(
+            ["git", *args], cwd=repo_path, capture_output=True, text=True, check=False
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    branch = git_output("branch", "--show-current")
+    head_commit = git_output("rev-parse", "HEAD")
+    git_status = git_output("status", "--short")
+    print(
+        "Context repository state: "
+        f"branch={branch or 'unavailable'} commit={(head_commit or 'unavailable')[:12]} "
+        f"dirty={bool(git_status) if git_status is not None else 'unavailable'}"
+    )
     root = Path(config.output_dir)
     run_dir = root / "runs" / datetime.now().strftime("%Y-%m-%d_%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -947,20 +1014,10 @@ def run_serena_context(
             "request": request,
             "active_questions": active_questions or [],
             "repo_path": config.repo_path,
-            "head_commit": subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=config.repo_path,
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout.strip(),
-            "git_status": subprocess.run(
-                ["git", "status", "--short"],
-                cwd=config.repo_path,
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout,
+            "branch": branch,
+            "head_commit": head_commit,
+            "git_status": git_status,
+            "dirty": bool(git_status) if git_status is not None else None,
             "serena_command": [config.command, *config.args],
             "allowed_tools": sorted(READ_ONLY_SERENA_TOOLS),
             "available_allowed_tools": available_tools,
@@ -972,6 +1029,8 @@ def run_serena_context(
             "max_tool_result_chars": config.max_tool_result_chars,
             "max_transcript_chars": config.max_transcript_chars,
             "max_report_output_tokens": config.max_report_output_tokens,
+            "context_input_target_tokens": config.context_input_target_tokens,
+            "max_round_tool_result_chars": config.max_round_tool_result_chars,
             "schema_version": SERENA_SCHEMA_VERSION,
             "structured_output_method": SERENA_STRUCTURED_OUTPUT_METHOD,
             "model_request_min_interval_seconds": (
@@ -983,6 +1042,9 @@ def run_serena_context(
                 request_limiter.total_wait_seconds,
                 3,
             ),
+            "estimated_model_input_tokens": request_limiter.estimated_input_tokens,
+            "actual_model_input_tokens": request_limiter.actual_input_tokens,
+            "actual_model_output_tokens": request_limiter.actual_output_tokens,
             "report_errors": report_errors,
             "model": {
                 "provider": config.model.provider,

@@ -5,11 +5,13 @@ import logging
 import subprocess
 import sys
 import webbrowser
+import json
 from contextlib import contextmanager
 from pathlib import Path
 
 from .code_review.config import load_code_review_config
 from .code_review.flow import code_review_flow
+from .code_review.tasks import _run_command
 from .implementation.flow import implementation_flow
 from .planning.config import load_planning_config
 from .planning.artifacts import create_plan_run_dir
@@ -304,6 +306,42 @@ def _run_plan(args: argparse.Namespace) -> int:
     run_dir = create_plan_run_dir(config.output_dir)
     with _capture_plan_log(run_dir) as log_path:
         _print_resolved_config(config)
+        review_config = load_code_review_config(
+            args.repo, args.config, global_config_path=args.global_config
+        )
+        repo = Path(config.repo_path)
+        def git_value(*command):
+            result = subprocess.run(
+                ["git", *command], cwd=repo, capture_output=True, text=True, check=False
+            )
+            return result.stdout.strip() if result.returncode == 0 else None
+        branch = git_value("branch", "--show-current")
+        commit = git_value("rev-parse", "HEAD")
+        status = git_value("status", "--short")
+        repository_state = {
+            "branch": branch, "commit": commit,
+            "dirty": bool(status) if status is not None else None,
+        }
+        print(
+            "Repository state: "
+            f"branch={branch or 'unavailable'} commit={(commit or 'unavailable')[:12]} "
+            f"dirty={repository_state['dirty']}"
+        )
+        print("Baseline stage: configured pre-build checks")
+        baseline = [
+            _run_command(command, review_config.repo_path, review_config.max_command_output_chars)
+            for command in review_config.check_commands
+        ]
+        baseline_path = run_dir / "baseline.json"
+        baseline_path.write_text(json.dumps({
+            "repository": repository_state,
+            "checks": baseline,
+            "passed": all(item["passed"] for item in baseline),
+        }, indent=2), encoding="utf-8")
+        print(
+            f"Baseline: {'passed' if all(item['passed'] for item in baseline) else 'failed'} "
+            f"({len(baseline)} checks); {baseline_path.resolve()}"
+        )
         print(f"Run log: {log_path}")
         print()
         try:

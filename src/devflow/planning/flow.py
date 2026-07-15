@@ -418,6 +418,32 @@ def _architecture_decision_gate(
     supplied_decisions: dict[str, str] | None = None,
 ) -> tuple[str, str | None]:
     decisions = repository_context.get("architecture_decisions", [])
+    chains = repository_context.get("impact_chains", [])
+    side_effects = [
+        effect for chain in chains for effect in chain.get("potential_side_effects", [])
+    ]
+    closed = sum(not chain.get("closure_gaps") for chain in chains)
+    print("Context stage: human impact review")
+    print(
+        f"Impact review: chains={len(chains)} closed={closed}/{len(chains)} "
+        f"side_effects={len(side_effects)} architecture_decisions={len(decisions)}"
+    )
+    for effect in side_effects:
+        print(f"  Potential side effect: {effect}")
+    if not auto_approve and not sys.stdin.isatty():
+        path = Path(run_dir) / "impact-review-input.json"
+        path.write_text(json.dumps({"approved": False, "notes": ""}, indent=2), encoding="utf-8")
+        print(f"Impact review requires human approval: {path.resolve()}")
+        return "stop", str(path.resolve())
+    if not auto_approve:
+        while True:
+            answer = input("[A]ccept impact review, [O]pen context, or [S]top? [S]: ").strip().lower()
+            if answer in {"o", "open"}:
+                _open_context_review(repository_context, run_dir)
+                continue
+            if answer in {"a", "accept"}:
+                break
+            return "stop", None
     if not decisions:
         return "approved", None
     approvals = []
@@ -624,6 +650,7 @@ def planning_flow(
                 "user_input_path": user_input_path,
             }
         _log_initial_context(repository_context, context_source, logger)
+    print("Context stage: impact closure")
     _run_impact_review(
         request, repository_context, context_source, serena_config, logger
     )
@@ -672,6 +699,7 @@ def planning_flow(
         "approved": True,
     })
 
+    print("Planning stage: plan synthesis")
     final_state = run_planning_graph(
         _planning_state(
             request,

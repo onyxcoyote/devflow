@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+
+from .research import flatten_context_for_planning
 from time import perf_counter
 
 from devflow.code_review.nodes import _model_result_metadata, _raw_response_data
@@ -78,7 +80,7 @@ def prepare_plan_context(state: PlanningState) -> dict:
     return {
         "context_text": json.dumps(
             {
-                "report": state["repository_context"],
+                "report": flatten_context_for_planning(state["repository_context"]),
                 "context_approved_file_excerpts": approved_file_excerpts,
             },
             indent=2,
