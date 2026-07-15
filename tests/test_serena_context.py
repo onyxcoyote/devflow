@@ -13,8 +13,10 @@ from devflow.repository_context.serena import (
     SerenaContextRunError,
     SerenaContextReport,
     ResearchBrief,
+    ContextReconciliation,
     _call_signature,
     _apply_brief_coverage,
+    _apply_reconciliation,
     _bounded_transcript,
     _langchain_tools,
     _is_unscoped_pattern_search,
@@ -125,12 +127,48 @@ class SerenaToolFilteringTests(unittest.TestCase):
             "question": question,
             "resolution": "HistoryService persists it.",
             "source": "server/services/history.ts:HistoryService",
+        }], relevant_files=[{
+            "path": "server/services/history.ts",
+            "role": "probable_change_target",
+            "reason": "Defines the persistence behavior.",
+            "symbols": ["HistoryService"],
         }])
 
         ledger = _apply_brief_coverage(report, {"research_questions": [question]})
 
         self.assertEqual(report["status"], "sufficient")
         self.assertEqual(ledger[0]["status"], "self_answered")
+
+    def test_reconciliation_merges_files_by_path_and_upgrades_role(self):
+        report = complete_report(relevant_files=[{
+            "path": "server/services/history.ts",
+            "role": "supporting_context",
+            "reason": "Defines history reads.",
+            "symbols": ["readHistory"],
+        }])
+        delta = {
+            "summary": "Persistence is also affected.",
+            "assumptions_changed": ["The value is not UI-only."],
+            "relevant_files": [{
+                "path": "server/services/history.ts",
+                "role": "probable_change_target",
+                "reason": "Also writes the new value.",
+                "symbols": ["saveHistory"],
+            }],
+            "relevant_symbols": ["HistoryService.saveHistory"],
+            "evidence": [],
+            "impact_chains": [],
+            "missing_context": [],
+        }
+
+        stats = _apply_reconciliation(report, delta)
+
+        self.assertEqual(len(report["relevant_files"]), 1)
+        self.assertEqual(report["relevant_files"][0]["role"], "probable_change_target")
+        self.assertEqual(
+            report["relevant_files"][0]["symbols"], ["readHistory", "saveHistory"]
+        )
+        self.assertEqual(stats["roles_upgraded"], 1)
 
 
 class SerenaResultFormattingTests(unittest.TestCase):
@@ -410,6 +448,7 @@ class SerenaReportSchemaTests(unittest.TestCase):
 
         check_objects(SerenaContextReport.model_json_schema())
         check_objects(ResearchBrief.model_json_schema())
+        check_objects(ContextReconciliation.model_json_schema())
         self.assertEqual(SERENA_SCHEMA_VERSION, "portable-v1")
         self.assertEqual(SERENA_STRUCTURED_OUTPUT_METHOD, "function_calling")
 

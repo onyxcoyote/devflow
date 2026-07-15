@@ -153,6 +153,30 @@ class PlanningFlowTests(unittest.TestCase):
         self.assertEqual(context["missing_context"], [])
         self.assertEqual(context["evidence"][0]["source"], "combat.ts")
 
+    def test_context_refinement_upgrades_file_without_duplicate(self):
+        context = {
+            "status": "needs_repository_context",
+            "missing_context": [],
+            "relevant_files": [{
+                "path": "history.ts", "role": "supporting_context",
+                "reason": "Reads history.", "symbols": ["readHistory"],
+            }],
+        }
+        merge_context_refinement(context, {
+            "status": "sufficient",
+            "missing_context": [],
+            "relevant_files": [{
+                "path": "history.ts", "role": "probable_change_target",
+                "reason": "Writes the new field.", "symbols": ["saveHistory"],
+            }],
+        })
+
+        self.assertEqual(len(context["relevant_files"]), 1)
+        self.assertEqual(context["relevant_files"][0]["role"], "probable_change_target")
+        self.assertEqual(
+            context["relevant_files"][0]["symbols"], ["readHistory", "saveHistory"]
+        )
+
     def test_impact_request_requires_end_to_end_closure(self):
         request, questions = impact_context_request("Add history statistics.")
         self.assertIn("IMPACT CLOSURE", request)

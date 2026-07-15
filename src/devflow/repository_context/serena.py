@@ -211,6 +211,24 @@ class SerenaContextReport(SerenaSchema):
     )
 
 
+class ContextReconciliation(SerenaSchema):
+    summary: str = Field(description="Concise explanation of how discoveries change context scope.")
+    assumptions_changed: list[str] = Field(
+        description="Prior assumptions confirmed, replaced, or invalidated; return [] if none."
+    )
+    relevant_files: list[RelevantFile] = Field(
+        description="Files added or reclassified because of the research answers."
+    )
+    relevant_symbols: list[str] = Field(description="Newly implicated symbols; return [] if none.")
+    evidence: list[ContextEvidence] = Field(description="New short grounded evidence entries.")
+    impact_chains: list[ImpactChain] = Field(
+        description="New or revised impact chains; return [] if impact is not yet established."
+    )
+    missing_context: list[MissingContextItem] = Field(
+        description="New gaps exposed by reconciling the answers; return [] if none."
+    )
+
+
 class SerenaContextRunError(RuntimeError):
     def __init__(self, message: str, diagnostic_path: str):
         super().__init__(message)
@@ -489,6 +507,77 @@ def _question_key(value: str) -> str:
     return " ".join(value.lower().split()).rstrip("?.!")
 
 
+_FILE_ROLE_RANK = {
+    "supporting_context": 0,
+    "candidate_change_target": 1,
+    "probable_change_target": 2,
+}
+
+
+def _merge_relevant_files(target: list[dict[str, Any]], additions: list[dict[str, Any]]) -> dict[str, int]:
+    by_path = {item.get("path"): item for item in target if item.get("path")}
+    added = 0
+    upgraded = 0
+    for addition in additions:
+        path = addition.get("path")
+        if not path:
+            continue
+        current = by_path.get(path)
+        if current is None:
+            copied = dict(addition)
+            target.append(copied)
+            by_path[path] = copied
+            added += 1
+            continue
+        if _FILE_ROLE_RANK.get(addition.get("role"), -1) > _FILE_ROLE_RANK.get(current.get("role"), -1):
+            current["role"] = addition["role"]
+            upgraded += 1
+        current["symbols"] = list(dict.fromkeys([
+            *current.get("symbols", []), *addition.get("symbols", [])
+        ]))
+        new_reason = addition.get("reason", "")
+        if new_reason and new_reason not in current.get("reason", ""):
+            current["reason"] = (current.get("reason", "") + " | " + new_reason).strip(" |")[:800]
+    return {"added": added, "upgraded": upgraded}
+
+
+def _merge_unique(target: list[Any], additions: list[Any]) -> int:
+    seen = {json.dumps(item, sort_keys=True, default=str) for item in target}
+    added = 0
+    for item in additions:
+        key = json.dumps(item, sort_keys=True, default=str)
+        if key not in seen:
+            target.append(item)
+            seen.add(key)
+            added += 1
+    return added
+
+
+def _apply_reconciliation(report: dict[str, Any], delta: dict[str, Any]) -> dict[str, int]:
+    file_delta = _merge_relevant_files(
+        report.setdefault("relevant_files", []), delta.get("relevant_files", [])
+    )
+    symbols_added = _merge_unique(
+        report.setdefault("relevant_symbols", []), delta.get("relevant_symbols", [])
+    )
+    _merge_unique(report.setdefault("evidence", []), delta.get("evidence", []))
+    _merge_unique(report.setdefault("impact_chains", []), delta.get("impact_chains", []))
+    gaps_added = _merge_unique(
+        report.setdefault("missing_context", []), delta.get("missing_context", [])
+    )
+    report["reconciliation"] = {
+        "summary": delta.get("summary", ""),
+        "assumptions_changed": delta.get("assumptions_changed", []),
+        "files_added": file_delta["added"],
+        "roles_upgraded": file_delta["upgraded"],
+        "symbols_added": symbols_added,
+        "new_gaps": gaps_added,
+    }
+    if gaps_added and report.get("status") == "sufficient":
+        report["status"] = "needs_repository_context"
+    return report["reconciliation"]
+
+
 def _apply_brief_coverage(report: dict[str, Any], brief: dict[str, Any]) -> list[dict[str, Any]]:
     resolutions = {
         _question_key(item.get("question", "")): item
@@ -506,12 +595,29 @@ def _apply_brief_coverage(report: dict[str, Any], brief: dict[str, Any]) -> list
     for question in brief.get("research_questions", []):
         resolution = resolutions.get(_question_key(question))
         if resolution:
+            source = resolution.get("source", "")
+            source_path = source.split(":", 1)[0]
+            path_like_source = "/" in source_path or "." in Path(source_path).name
+            source_reconciled = not path_like_source or any(
+                item.get("path") == source_path for item in report.get("relevant_files", [])
+            )
             ledger.append({
                 "question": question,
-                "status": "self_answered",
+                "status": "self_answered" if source_reconciled else "answered_unreconciled",
                 "answer": resolution.get("resolution", ""),
-                "source": resolution.get("source", ""),
+                "source": source,
             })
+            if not source_reconciled:
+                report.setdefault("missing_context", []).append({
+                    "kind": "repository",
+                    "description": f"Reconcile the implications of the answer to: {question}",
+                    "suggested_action": (
+                        f"Add or classify {source_path} and trace affected definitions, callers, "
+                        "consumers, types, mappings, and persistence effects."
+                    ),
+                    "related_files": [source_path],
+                    "related_symbols": [],
+                })
             continue
         ledger.append({"question": question, "status": "unresolved", "answer": "", "source": ""})
         if not any(
@@ -525,7 +631,7 @@ def _apply_brief_coverage(report: dict[str, Any], brief: dict[str, Any]) -> list
                 "related_files": [],
                 "related_symbols": [],
             })
-    if any(item["status"] == "unresolved" for item in ledger) and report.get("status") == "sufficient":
+    if any(item["status"] in {"unresolved", "answered_unreconciled"} for item in ledger) and report.get("status") == "sufficient":
         report["status"] = "needs_repository_context"
     report["research_brief"] = brief
     report["inquiry_ledger"] = ledger
@@ -880,6 +986,10 @@ async def _explore_round(
         SerenaContextReport,
         method=SERENA_STRUCTURED_OUTPUT_METHOD,
     )
+    reconciliation_model = report_model.with_structured_output(
+        ContextReconciliation,
+        method=SERENA_STRUCTURED_OUTPUT_METHOD,
+    )
     transcript_text, included_events = _bounded_transcript(
         events,
         config.max_transcript_chars,
@@ -958,7 +1068,34 @@ async def _explore_round(
             )
             report = await request_limiter.invoke(structured_report_model, prompt, purpose)
             report_dict = report.model_dump()
+            print("Context stage: reconcile research impact")
+            reconciliation = await request_limiter.invoke(
+                reconciliation_model,
+                (
+                    "Reconcile the grounded research answers into implementation scope. Identify "
+                    "what the discoveries change about relevant files, concrete types, callers, "
+                    "consumers, mappings, serialization, persistence, and state lifecycle. Return "
+                    "only deltas supported by the report or current transcript. Reclassify existing "
+                    "files when evidence strengthens their role. Expose new repository gaps instead "
+                    "of guessing. Do not duplicate files merely to change their role or reason.\n\n"
+                    f"DEVELOPMENT REQUEST\n{request}\n\n"
+                    f"RESEARCH BRIEF\n{json.dumps(research_brief or {}, ensure_ascii=False)}\n\n"
+                    f"CURRENT REPORT\n{json.dumps(report_dict, ensure_ascii=False)}\n\n"
+                    f"CURRENT ROUND TRANSCRIPT\n{transcript_text}"
+                ),
+                "Reconcile answers into context scope",
+            )
+            reconciliation_stats = _apply_reconciliation(
+                report_dict, reconciliation.model_dump()
+            )
             _apply_brief_coverage(report_dict, research_brief or {})
+            print(
+                "Answer reconciled: "
+                f"files added={reconciliation_stats['files_added']}, "
+                f"roles upgraded={reconciliation_stats['roles_upgraded']}, "
+                f"symbols added={reconciliation_stats['symbols_added']}, "
+                f"new gaps={reconciliation_stats['new_gaps']}"
+            )
             return report_dict, events, calls_attempted, attempt_errors
         except Exception as error:
             attempt_errors.append({

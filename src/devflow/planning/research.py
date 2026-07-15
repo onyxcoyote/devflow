@@ -252,8 +252,37 @@ def supplemental_progress_signature(report: dict) -> tuple:
 
 def merge_context_refinement(context: dict, report: dict) -> None:
     """Merge a targeted report while making its unresolved set authoritative."""
+    role_rank = {
+        "supporting_context": 0,
+        "candidate_change_target": 1,
+        "probable_change_target": 2,
+    }
+    existing_files = {
+        item.get("path"): item
+        for item in context.setdefault("relevant_files", [])
+        if item.get("path")
+    }
+    for item in report.get("relevant_files", []):
+        path = item.get("path")
+        if not path:
+            continue
+        current = existing_files.get(path)
+        if current is None:
+            copied = dict(item)
+            context["relevant_files"].append(copied)
+            existing_files[path] = copied
+            continue
+        if role_rank.get(item.get("role"), -1) > role_rank.get(current.get("role"), -1):
+            current["role"] = item["role"]
+        current["symbols"] = list(dict.fromkeys([
+            *current.get("symbols", []), *item.get("symbols", [])
+        ]))
+        reason = item.get("reason", "")
+        if reason and reason not in current.get("reason", ""):
+            current["reason"] = (current.get("reason", "") + " | " + reason).strip(" |")[:800]
+
     for field in (
-        "relevant_files", "relevant_symbols", "evidence", "question_resolutions",
+        "relevant_symbols", "evidence", "question_resolutions",
         "impact_chains", "architecture_decisions",
     ):
         existing = context.setdefault(field, [])
@@ -277,6 +306,17 @@ def merge_context_refinement(context: dict, report: dict) -> None:
             question_key(item.get("subquestion", "")),
         )] = item
     context["research_checkpoints"] = list(checkpoints.values())
+    inquiries = {
+        question_key(item.get("question", "")): item
+        for item in context.get("inquiry_ledger", [])
+        if item.get("question")
+    }
+    for item in report.get("inquiry_ledger", []):
+        if item.get("question"):
+            inquiries[question_key(item["question"])] = item
+    context["inquiry_ledger"] = list(inquiries.values())
+    if report.get("reconciliation"):
+        context.setdefault("reconciliation_history", []).append(report["reconciliation"])
     retained = [
         item for item in context.get("missing_context", [])
         if item.get("kind") != "repository"
