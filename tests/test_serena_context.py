@@ -74,8 +74,17 @@ class SerenaToolFilteringTests(unittest.TestCase):
         self.assertTrue(_references_generated_artifacts({
             "relative_path": ".devflow/serena-context/b/context.json",
         }))
+        self.assertTrue(_references_generated_artifacts({
+            "paths_include_glob": ".devflow/**/*",
+        }))
         self.assertFalse(_references_generated_artifacts({
             "relative_path": "src/devflow/cli.py",
+        }))
+
+    def test_allows_generated_artifact_exclusion_arguments(self):
+        self.assertFalse(_references_generated_artifacts({
+            "paths_exclude_glob": ".devflow/**/*",
+            "substring_pattern": "class .*Chart",
         }))
 
 

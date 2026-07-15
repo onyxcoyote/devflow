@@ -29,6 +29,13 @@ READ_ONLY_SERENA_TOOLS = {
 }
 
 GENERATED_ARTIFACT_PATH = re.compile(r"(^|[\\/])\.devflow([\\/]|$)")
+GENERATED_ARTIFACT_EXCLUSION_ARGUMENTS = frozenset({
+    "exclude",
+    "exclude_glob",
+    "excluded_paths",
+    "ignored_paths",
+    "paths_exclude_glob",
+})
 ROUND_EXTENSION_CALLS = 6
 
 
@@ -382,8 +389,8 @@ def _references_generated_artifacts(value: Any) -> bool:
         return GENERATED_ARTIFACT_PATH.search(value) is not None
     if isinstance(value, dict):
         return any(
-            _references_generated_artifacts(key)
-            or _references_generated_artifacts(item)
+            key not in GENERATED_ARTIFACT_EXCLUSION_ARGUMENTS
+            and _references_generated_artifacts(item)
             for key, item in value.items()
         )
     if isinstance(value, (list, tuple)):
