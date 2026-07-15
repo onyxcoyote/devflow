@@ -16,6 +16,8 @@ class CodeReviewConfig:
     max_diff_chars: int = 40_000
     max_command_output_chars: int = 12_000
     save_model_exchange: bool = False
+    implementation_backend: str = "native"
+    aider_model: str | None = None
     model: ModelConfig = ModelConfig(
         provider="ollama",
         model="",
@@ -45,6 +47,7 @@ def load_code_review_config(
     )
     raw = shared.raw
     review = raw.get("review", {})
+    implementation = raw.get("implementation", {})
     command_config = raw.get("commands", {})
     output_dir = Path(review.get("output_dir", ".devflow/reviews"))
     if not output_dir.is_absolute():
@@ -61,6 +64,8 @@ def load_code_review_config(
             review.get("max_command_output_chars", 12_000)
         ),
         save_model_exchange=bool(review.get("save_model_exchange", False)),
+        implementation_backend=str(implementation.get("backend", "native")),
+        aider_model=implementation.get("aider_model"),
         model=shared.model,
         config_sources=shared.config_sources,
     )

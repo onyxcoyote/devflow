@@ -14,6 +14,7 @@ from devflow.code_review.tasks import _run_command
 
 from .schemas import ImplementationProposal
 from .grounding import grounding_preflight
+from .aider import apply_aider_patch, create_aider_proposal
 
 
 MAX_SOURCE_CHARS = 80_000
@@ -174,6 +175,7 @@ def implementation_flow(
     config: CodeReviewConfig,
     *,
     auto_approve: bool = False,
+    backend: str | None = None,
 ) -> dict:
     logger = get_run_logger()
     plan, resolved_plan_path = _load_plan(plan_path, config.repo_path)
@@ -263,6 +265,75 @@ def implementation_flow(
         ],
     }
     planned_paths, sources = _planned_sources(expanded_plan, config.repo_path)
+    selected_backend = backend or config.implementation_backend
+    if selected_backend not in {"native", "aider"}:
+        raise ValueError(f"Unsupported implementation backend: {selected_backend}")
+    if selected_backend == "aider":
+        print("Implementation backend: Aider (isolated git worktree)")
+        aider_result = create_aider_proposal(
+            plan=plan,
+            impact_context=impact_context,
+            planned_paths=planned_paths,
+            repo_path=config.repo_path,
+            run_dir=run_dir,
+            config=config,
+        )
+        proposal = aider_result["proposal"]
+        proposal_path = run_dir / "proposal.json"
+        proposal_path.write_text(json.dumps(proposal, indent=2), encoding="utf-8")
+        print(f"Aider proposal: {proposal_path.resolve()}")
+        print(f"Changed files: {len(proposal['changed_paths'])}")
+        for path in proposal["changed_paths"]:
+            print(f"  - {path}")
+        if proposal["missing_planned_paths"]:
+            print("Planned files not changed by Aider:")
+            for path in proposal["missing_planned_paths"]:
+                print(f"  - {path}")
+        scope_approved = True
+        if proposal["extra_paths"]:
+            print("Aider changed files outside the approved plan scope:")
+            for path in proposal["extra_paths"]:
+                print(f"  - {path}")
+            scope_approved = _confirm(
+                "Approve these additional files for this implementation?", auto_approve
+            )
+        applied = False
+        command_results = []
+        if proposal["status"] == "ready" and scope_approved:
+            if _confirm("Apply this Aider diff to the working repository?", auto_approve):
+                apply_aider_patch(aider_result["patch_path"], config.repo_path)
+                applied = True
+                command_results = [
+                    _run_command(command, config.repo_path, config.max_command_output_chars)
+                    for command in (*config.check_commands, *config.test_commands)
+                ]
+                for result in command_results:
+                    print(
+                        f"Validation {'passed' if result['passed'] else 'FAILED'}: "
+                        f"{' '.join(result['command'])}"
+                    )
+        evidence_path = run_dir / "evidence.json"
+        evidence_path.write_text(json.dumps({
+            "backend": "aider",
+            "plan_path": str(resolved_plan_path),
+            "planned_paths": planned_paths,
+            "changed_paths": proposal["changed_paths"],
+            "extra_paths": proposal["extra_paths"],
+            "missing_planned_paths": proposal["missing_planned_paths"],
+            "extra_scope_approved": scope_approved,
+            "applied": applied,
+            "baseline_results": baseline_results,
+            "command_results": command_results,
+        }, indent=2), encoding="utf-8")
+        return {"proposal": proposal, "applied": applied, "paths": {
+            "proposal": str(proposal_path.resolve()),
+            "patch": aider_result["patch_path"],
+            "prompt": aider_result["prompt_path"],
+            "transcript": aider_result["transcript_path"],
+            "evidence": str(evidence_path.resolve()),
+            "preflight": str(preflight_path.resolve()),
+            "baseline": str(baseline_path.resolve()),
+        }}
     prompt = (
         "Implement the approved plan using exact text replacements. Stay within planned files. "
         "Inspect the supplied bounded source before editing. Preserve existing behavior unless "
