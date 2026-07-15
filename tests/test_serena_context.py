@@ -465,7 +465,7 @@ class SerenaReportSchemaTests(unittest.TestCase):
         check_objects(SerenaContextReport.model_json_schema())
         check_objects(ResearchBrief.model_json_schema())
         check_objects(ContextReconciliation.model_json_schema())
-        self.assertEqual(SERENA_SCHEMA_VERSION, "portable-v1")
+        self.assertEqual(SERENA_SCHEMA_VERSION, "portable-v2")
         self.assertEqual(SERENA_STRUCTURED_OUTPUT_METHOD, "function_calling")
 
 

@@ -134,7 +134,10 @@ def impact_context_request(request: str) -> tuple[str, list[dict[str, str]]]:
         "IMPACT CLOSURE: Trace every changed concept required by this request from its origin or "
         "calculation through concrete object types, construction, callers, mappings, consumers, "
         "serialization/API boundaries, and persistence. Identify all affected definitions and "
-        "material architecture decisions."
+        "material architecture decisions. Do not equate same-named values without proving they "
+        "have the same qualified owner, semantic meaning, source of truth, and lifecycle. A "
+        "current snapshot and a lifetime cumulative value may share a name while representing "
+        "different concepts. Record ambiguity or contradictions as closure gaps."
     )
     questions = [{
         "question": question,
@@ -142,6 +145,125 @@ def impact_context_request(request: str) -> tuple[str, list[dict[str, str]]]:
         "suggested_action": "Follow qualified symbols and data/control flow until each chain closes.",
     }]
     return supplemental_context_request(request, questions, 1), questions
+
+
+def impact_delta_from_report(report: dict) -> dict:
+    """Validate and restrict impact output so it cannot rewrite established context facts."""
+    chains = []
+    gaps = []
+    impact_paths = set()
+    for original in report.get("impact_chains", []):
+        chain = json.loads(json.dumps(original))
+        identity_missing = [
+            field for field in ("owner_type", "semantic_meaning", "lifecycle")
+            if not chain.get(field)
+        ]
+        if not chain.get("source_of_truth"):
+            identity_missing.append("source_of_truth")
+        if identity_missing:
+            chain.setdefault("closure_gaps", []).append(
+                "Impact identity is incomplete: " + ", ".join(identity_missing)
+            )
+        for stage in chain.get("stages", []):
+            if stage.get("status") == "resolved" and not all(
+                stage.get(field) for field in ("path", "symbol", "object_type")
+            ):
+                stage["status"] = "unresolved"
+                chain.setdefault("closure_gaps", []).append(
+                    f"Stage {stage.get('stage', 'unknown')} lacks qualified path, symbol, or object type."
+                )
+            if stage.get("path"):
+                impact_paths.add(stage["path"])
+        for value in chain.get("affected_definitions", []):
+            impact_paths.add(value.split(":", 1)[0])
+        for gap in chain.get("closure_gaps", []):
+            gaps.append({
+                "kind": "repository",
+                "description": gap,
+                "suggested_action": (
+                    f"Complete and disambiguate impact closure for "
+                    f"{chain.get('owner_type', '')}.{chain.get('concept', 'concept')}."
+                ),
+                "related_files": sorted(path for path in impact_paths if path),
+                "related_symbols": chain.get("affected_definitions", []),
+            })
+        chains.append(chain)
+    decisions = report.get("architecture_decisions", [])
+    for decision in decisions:
+        impact_paths.update(decision.get("affected_files", []))
+    relevant_files = [
+        item for item in report.get("relevant_files", [])
+        if item.get("path") in impact_paths
+    ]
+    evidence = [
+        item for item in report.get("evidence", [])
+        if item.get("source", "").split(":", 1)[0] in impact_paths
+    ]
+    for item in report.get("missing_context", []):
+        if item.get("kind") == "repository":
+            gaps.append(item)
+    return {
+        "impact_chains": chains,
+        "architecture_decisions": decisions,
+        "relevant_files": relevant_files,
+        "evidence": evidence,
+        "missing_context": gaps,
+        "source_report_status": report.get("status"),
+    }
+
+
+def merge_impact_delta(context: dict, delta: dict) -> None:
+    """Add validated impact findings without replacing research resolutions or summaries."""
+    chain_map = {
+        (
+            question_key(item.get("owner_type", "")),
+            question_key(item.get("concept", "")),
+            question_key(item.get("semantic_meaning", "")),
+        ): item
+        for item in context.get("impact_chains", [])
+    }
+    for chain in delta.get("impact_chains", []):
+        key = (
+            question_key(chain.get("owner_type", "")),
+            question_key(chain.get("concept", "")),
+            question_key(chain.get("semantic_meaning", "")),
+        )
+        chain_map[key] = chain
+    context["impact_chains"] = list(chain_map.values())
+
+    for field in ("architecture_decisions", "evidence"):
+        existing = context.setdefault(field, [])
+        seen = {json.dumps(item, sort_keys=True, default=str) for item in existing}
+        for item in delta.get(field, []):
+            key = json.dumps(item, sort_keys=True, default=str)
+            if key not in seen:
+                existing.append(item)
+                seen.add(key)
+
+    existing_files = {
+        item.get("path"): item for item in context.setdefault("relevant_files", [])
+        if item.get("path")
+    }
+    role_rank = {"supporting_context": 0, "candidate_change_target": 1, "probable_change_target": 2}
+    for item in delta.get("relevant_files", []):
+        current = existing_files.get(item.get("path"))
+        if current is None:
+            copied = dict(item)
+            context["relevant_files"].append(copied)
+            existing_files[item.get("path")] = copied
+        elif role_rank.get(item.get("role"), -1) > role_rank.get(current.get("role"), -1):
+            current["role"] = item["role"]
+
+    existing_gaps = context.setdefault("missing_context", [])
+    seen_gaps = {question_key(item.get("description", "")) for item in existing_gaps}
+    for item in delta.get("missing_context", []):
+        key = question_key(item.get("description", ""))
+        if key and key not in seen_gaps:
+            existing_gaps.append(item)
+            seen_gaps.add(key)
+    if delta.get("missing_context"):
+        context["status"] = "needs_repository_context"
+    context.setdefault("impact_review_history", []).append(delta)
 
 
 def supplemental_prior_report(repository_context: dict) -> dict:

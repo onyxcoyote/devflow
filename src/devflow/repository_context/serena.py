@@ -39,7 +39,7 @@ GENERATED_ARTIFACT_EXCLUSION_ARGUMENTS = frozenset({
 ROUND_EXTENSION_CALLS = 6
 
 
-SERENA_SCHEMA_VERSION = "portable-v1"
+SERENA_SCHEMA_VERSION = "portable-v2"
 SERENA_STRUCTURED_OUTPUT_METHOD = "function_calling"
 
 
@@ -142,6 +142,18 @@ class ImpactStage(SerenaSchema):
 
 class ImpactChain(SerenaSchema):
     concept: str = Field(description="Changed field, behavior, type, or method being traced.")
+    owner_type: str = Field(
+        description="Qualified object/type that owns this exact concept; never infer identity by name alone."
+    )
+    semantic_meaning: str = Field(
+        description="Domain meaning of this value, distinguishing same-named values with different meanings."
+    )
+    source_of_truth: str = Field(
+        description="Qualified origin or authoritative storage/calculation, or empty when unresolved."
+    )
+    lifecycle: str = Field(
+        description="Time horizon and update lifecycle, such as current snapshot or lifetime cumulative."
+    )
     stages: list[ImpactStage] = Field(description="Ordered upstream-to-downstream flow stages.")
     affected_definitions: list[str] = Field(
         description="Qualified path:symbol definitions affected; return [] if none."
@@ -1075,7 +1087,11 @@ async def _explore_round(
                 "Do not mark a chain closed while a material stage is unknown. Put every closure "
                 "gap in missing_context. Populate architecture_decisions for persistence, schema, "
                 "source-of-truth, new-component, public-contract, compatibility, security, or "
-                "state-lifecycle choices.\n"
+                "state-lifecycle choices. Never equate values merely because they share a field "
+                "or domain name. For every chain, distinguish qualified owner_type, semantic "
+                "meaning, source of truth, and lifecycle; for example current inventory and "
+                "lifetime consumption may both be named food but are not interchangeable. If "
+                "identity is ambiguous, record a closure gap instead of choosing one.\n"
             )
     report_prompt = (
         "Create an accumulated grounded repository-context report for the development request. "

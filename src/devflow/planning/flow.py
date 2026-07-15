@@ -20,6 +20,9 @@ from .research import (
     apply_user_answers_to_context,
     context_user_questions,
     impact_context_request,
+    impact_delta_from_report,
+    merge_impact_delta,
+    flatten_context_for_planning,
     normalize_supplemental_report,
     merge_context_refinement,
     question_key,
@@ -189,6 +192,15 @@ def _open_context_review(repository_context: dict, run_dir: str) -> str:
     return str(resolved)
 
 
+def _open_existing_review(path: str) -> None:
+    resolved = Path(path).resolve()
+    print(f"Planner context review: {resolved}")
+    try:
+        subprocess.Popen(["xdg-open", str(resolved)])
+    except OSError:
+        webbrowser.open(resolved.as_uri())
+
+
 def _collect_research_hints(gaps: list[dict], run_dir: str) -> tuple[list[str], str | None]:
     hints = []
     for item in gaps:
@@ -338,7 +350,18 @@ def _refine_incomplete_context(
             initial_report=supplemental_prior_report(repository_context),
             active_questions=[item["question"] for item in questions],
         )
-        report = normalize_supplemental_report(result["report"], questions)
+        raw_report = result["report"]
+        report = normalize_supplemental_report(raw_report, questions)
+        if phase == "impact_context_refinement":
+            existing_gap_keys = {
+                question_key(item.get("description", ""))
+                for item in report.get("missing_context", [])
+            }
+            report["missing_context"].extend(
+                item for item in raw_report.get("missing_context", [])
+                if item.get("kind") == "repository"
+                and question_key(item.get("description", "")) not in existing_gap_keys
+            )
         _log_supplemental_answers(report, logger)
         repository_context.setdefault("supplemental_rounds", []).append({
             "phase": phase,
@@ -351,7 +374,10 @@ def _refine_incomplete_context(
             "round": refinement_round,
             "paths": result.get("paths", {}),
         })
-        merge_context_refinement(repository_context, report)
+        if phase == "impact_context_refinement":
+            merge_impact_delta(repository_context, impact_delta_from_report(report))
+        else:
+            merge_context_refinement(repository_context, report)
         live_context_path.write_text(
             json.dumps(repository_context, indent=2), encoding="utf-8"
         )
@@ -380,6 +406,8 @@ def _run_impact_review(
     context_source: dict,
     serena_config: SerenaContextConfig,
     logger,
+    *,
+    run_dir: str,
 ) -> None:
     impact_request, questions = impact_context_request(request)
     logger.info("Starting repository impact-closure review")
@@ -389,22 +417,22 @@ def _run_impact_review(
         initial_report=supplemental_prior_report(repository_context),
         active_questions=[item["question"] for item in questions],
     )
-    report = normalize_supplemental_report(result["report"], questions)
-    for chain in report.get("impact_chains", []):
-        for gap in chain.get("closure_gaps", []):
-            if not any(
-                question_key(item.get("description", "")) == question_key(gap)
-                for item in report.get("missing_context", [])
-            ):
-                report.setdefault("missing_context", []).append({
-                    "kind": "repository",
-                    "description": gap,
-                    "suggested_action": f"Complete impact closure for {chain.get('concept', 'concept')}.",
-                    "related_files": [],
-                    "related_symbols": chain.get("affected_definitions", []),
-                })
-    if any(item.get("kind") == "repository" for item in report.get("missing_context", [])):
-        report["status"] = "needs_repository_context"
+    raw_report = result["report"]
+    report = normalize_supplemental_report(raw_report, questions)
+    existing_gap_keys = {
+        question_key(item.get("description", ""))
+        for item in report.get("missing_context", [])
+    }
+    report["missing_context"].extend(
+        item for item in raw_report.get("missing_context", [])
+        if item.get("kind") == "repository"
+        and question_key(item.get("description", "")) not in existing_gap_keys
+    )
+    delta = impact_delta_from_report(report)
+    before_path = Path(run_dir) / "context-before-impact.json"
+    before_path.write_text(json.dumps(repository_context, indent=2), encoding="utf-8")
+    delta_path = Path(run_dir) / "impact-delta.json"
+    delta_path.write_text(json.dumps(delta, indent=2), encoding="utf-8")
     _log_supplemental_answers(report, logger)
     repository_context.setdefault("supplemental_rounds", []).append({
         "phase": "impact_review", "round": 1, "questions": questions, "report": report,
@@ -412,7 +440,9 @@ def _run_impact_review(
     context_source.setdefault("supplemental_rounds", []).append({
         "phase": "impact_review", "round": 1, "paths": result.get("paths", {}),
     })
-    merge_context_refinement(repository_context, report)
+    merge_impact_delta(repository_context, delta)
+    context_source["impact_delta_path"] = str(delta_path.resolve())
+    context_source["context_before_impact_path"] = str(before_path.resolve())
 
 
 def _architecture_decision_gate(
@@ -421,6 +451,7 @@ def _architecture_decision_gate(
     run_dir: str,
     auto_approve: bool,
     supplied_decisions: dict[str, str] | None = None,
+    planner_review_path: str | None = None,
 ) -> tuple[str, str | None]:
     decisions = repository_context.get("architecture_decisions", [])
     chains = repository_context.get("impact_chains", [])
@@ -433,6 +464,8 @@ def _architecture_decision_gate(
         f"Impact review: chains={len(chains)} closed={closed}/{len(chains)} "
         f"side_effects={len(side_effects)} architecture_decisions={len(decisions)}"
     )
+    if planner_review_path:
+        print(f"Exact planner input: {Path(planner_review_path).resolve()}")
     for effect in side_effects:
         print(f"  Potential side effect: {effect}")
     if not auto_approve and not sys.stdin.isatty():
@@ -444,7 +477,10 @@ def _architecture_decision_gate(
         while True:
             answer = input("[A]ccept impact review, [O]pen context, or [S]top? [S]: ").strip().lower()
             if answer in {"o", "open"}:
-                _open_context_review(repository_context, run_dir)
+                if planner_review_path:
+                    _open_existing_review(planner_review_path)
+                else:
+                    _open_context_review(repository_context, run_dir)
                 continue
             if answer in {"a", "accept"}:
                 break
@@ -716,7 +752,8 @@ def planning_flow(
         _log_initial_context(repository_context, context_source, logger)
     print("Context stage: impact closure")
     _run_impact_review(
-        request, repository_context, context_source, serena_config, logger
+        request, repository_context, context_source, serena_config, logger,
+        run_dir=run_dir,
     )
     impact_completion, impact_artifact = _refine_incomplete_context(
         request,
@@ -739,17 +776,38 @@ def planning_flow(
         }
     impact_path = Path(run_dir) / "impact-context.json"
     impact_path.write_text(json.dumps(repository_context, indent=2), encoding="utf-8")
+    merged_impact_delta_path = Path(run_dir) / "impact-delta-merged.json"
+    merged_impact_delta_path.write_text(json.dumps({
+        "impact_chains": repository_context.get("impact_chains", []),
+        "architecture_decisions": repository_context.get("architecture_decisions", []),
+        "impact_missing_context": [
+            item for item in repository_context.get("missing_context", [])
+            if item.get("kind") == "repository"
+        ],
+        "history": repository_context.get("impact_review_history", []),
+    }, indent=2), encoding="utf-8")
     (Path(run_dir) / "evidence.json").write_text(json.dumps({
         "repo_path": str(Path(config.repo_path).resolve()),
         "head_commit": repository_head(config.repo_path),
         "artifact": "impact_context",
     }, indent=2), encoding="utf-8")
     context_source["impact_context_path"] = str(impact_path.resolve())
+    context_source["merged_impact_delta_path"] = str(merged_impact_delta_path.resolve())
+    planner_review_path = Path(run_dir) / "context-for-planning.json"
+    planner_review_path.write_text(json.dumps({
+        "report": flatten_context_for_planning(repository_context),
+        "context_approved_file_excerpts": read_context_approved_files(
+            config.repo_path, repository_context
+        ),
+    }, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"Exact planner context: {planner_review_path.resolve()}")
+    context_source["planner_context_path"] = str(planner_review_path.resolve())
     architecture_status, architecture_path = _architecture_decision_gate(
         repository_context,
         run_dir=run_dir,
         auto_approve=auto_approve,
         supplied_decisions=supplied_architecture_decisions,
+        planner_review_path=str(planner_review_path.resolve()),
     )
     if architecture_status == "stop":
         return {
