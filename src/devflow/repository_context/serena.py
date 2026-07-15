@@ -55,8 +55,8 @@ class ResearchBrief(SerenaSchema):
     assumptions: list[str] = Field(description="Explicit working assumptions; return [] if none.")
     clarification_questions: list[str] = Field(
         description=(
-            "Only material questions whose answers could change files, architecture, persistence, "
-            "public behavior, or research direction; return [] if none."
+            "Three to six high-value questions whose answers could narrow terminology, files, "
+            "architecture, persistence, public behavior, constraints, or research direction."
         )
     )
     expected_flow: list[str] = Field(
@@ -643,6 +643,7 @@ def _apply_brief_coverage(report: dict[str, Any], brief: dict[str, Any]) -> list
             "status": item["status"],
             "answer": item.get("answer", ""),
             "source": "human" if item["status"] == "human_answered" else "research brief",
+            "authority": item.get("authority", "unclassified"),
         }
         for item in brief.get("clarification_answers", [])
     ]
@@ -701,26 +702,50 @@ def _clarify_research_brief(brief: dict[str, Any], *, auto_approve: bool) -> Non
     for question in questions:
         print(f"  Question: {question}")
         if auto_approve or not sys.stdin.isatty():
-            answers.append({"question": question, "status": "assumed", "answer": ""})
+            answers.append({
+                "question": question, "status": "assumed", "answer": "",
+                "authority": "implicit_assumption",
+            })
             continue
         while True:
             action = input("[A]nswer, [S]kip with stated assumption, [D]ocumentation hint, or [R]esearch? [R]: ").strip().lower()
             if action in {"a", "answer"}:
                 answer = input("Answer:\n> ").strip()
                 if answer:
-                    answers.append({"question": question, "status": "human_answered", "answer": answer})
+                    authority = input(
+                        "Treat as [R]equirement, repository [H]int, implementation [I]dea, "
+                        "or unverified [F]act? [R]: "
+                    ).strip().lower()
+                    authority = {
+                        "h": "repository_hint", "hint": "repository_hint",
+                        "i": "implementation_hypothesis", "idea": "implementation_hypothesis",
+                        "f": "unverified_fact", "fact": "unverified_fact",
+                    }.get(authority, "authoritative_requirement")
+                    answers.append({
+                        "question": question, "status": "human_answered",
+                        "answer": answer, "authority": authority,
+                    })
                     break
             elif action in {"s", "skip"}:
                 assumption = input("Assumption to use (blank keeps the brief assumption):\n> ").strip()
-                answers.append({"question": question, "status": "assumed", "answer": assumption})
+                answers.append({
+                    "question": question, "status": "assumed", "answer": assumption,
+                    "authority": "explicit_assumption",
+                })
                 break
             elif action in {"d", "documentation"}:
                 hint = input("Documentation path or guidance:\n> ").strip()
                 if hint:
-                    answers.append({"question": question, "status": "human_answered", "answer": hint})
+                    answers.append({
+                        "question": question, "status": "human_answered", "answer": hint,
+                        "authority": "documentation_hint",
+                    })
                     break
             else:
-                answers.append({"question": question, "status": "researching", "answer": ""})
+                answers.append({
+                    "question": question, "status": "researching", "answer": "",
+                    "authority": "repository_research",
+                })
                 break
     brief["clarification_answers"] = answers
 
@@ -740,8 +765,11 @@ async def _create_research_brief(
         brief_model,
         (
             "Prepare a concise research brief before using repository tools. Interpret the "
-            "development request, expose assumptions, identify only material clarification "
-            "questions, and define three to eight independently answerable research questions. "
+            "development request, expose assumptions, ask three to six high-value clarification "
+            "questions before repository research, and define three to eight independently "
+            "answerable research questions. Ask about ambiguous domain terms, source of truth, "
+            "behavioral constraints, non-goals, known repository locations, and optional human "
+            "implementation ideas when those answers could reduce research churn. "
             "Do not claim repository facts and do not propose implementation details as facts. "
             "Prefer asking for clarification when different meanings would send research into "
             "different application areas.\n\nDEVELOPMENT REQUEST\n" + request
@@ -844,7 +872,10 @@ async def _explore_round(
             "that is unavailable from information that has not yet been investigated. Avoid "
             "repeating completed calls from earlier rounds."
             " Treat .devflow as generated workflow output: never search, inspect, cite, or use "
-            "files beneath it as repository evidence."
+            "files beneath it as repository evidence. Human authoritative_requirement answers "
+            "define desired behavior. repository_hint and documentation_hint values only direct "
+            "search. implementation_hypothesis and unverified_fact values must be verified or "
+            "contradicted with repository evidence before use."
         )),
         HumanMessage(content=(
             f"Development request:\n{request}\n\n"

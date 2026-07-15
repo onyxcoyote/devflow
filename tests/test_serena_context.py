@@ -127,6 +127,7 @@ class SerenaToolFilteringTests(unittest.TestCase):
                 "question": "Does chart mean history chart?",
                 "status": "human_answered",
                 "answer": "Yes",
+                "authority": "authoritative_requirement",
             }],
         }
 
@@ -134,6 +135,7 @@ class SerenaToolFilteringTests(unittest.TestCase):
 
         self.assertEqual(report["status"], "needs_repository_context")
         self.assertEqual(ledger[0]["status"], "human_answered")
+        self.assertEqual(ledger[0]["authority"], "authoritative_requirement")
         self.assertEqual(ledger[1]["status"], "unresolved")
         self.assertEqual(report["missing_context"][0]["kind"], "repository")
 

@@ -140,7 +140,32 @@ class PlanningFlowTests(unittest.TestCase):
         }])
         self.assertEqual(report["status"], "sufficient")
         self.assertEqual(report["missing_context"], [])
-        self.assertEqual(report["question_resolutions"][0]["source"], "user input")
+        self.assertEqual(
+            report["question_resolutions"][0]["source"],
+            "user input (authoritative_requirement)",
+        )
+
+    def test_context_user_answer_preserves_input_authority(self):
+        report = {
+            "status": "needs_user_decision",
+            "missing_context": [{
+                "kind": "user_decision",
+                "description": "The schema may be in db/models.",
+                "suggested_action": "Verify the schema location.",
+            }],
+            "question_resolutions": [],
+        }
+
+        apply_user_answers_to_context(report, [{
+            "question": "The schema may be in db/models.",
+            "answer": "Look in db/models/schemas first.",
+            "authority": "repository_hint",
+        }])
+
+        self.assertEqual(
+            report["question_resolutions"][0]["source"],
+            "user input (repository_hint)",
+        )
 
     def test_builds_targeted_supplemental_request(self):
         result = supplemental_context_request(

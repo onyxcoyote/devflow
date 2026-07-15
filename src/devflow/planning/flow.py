@@ -138,6 +138,24 @@ def _log_initial_context(report: dict, context_source: dict, logger) -> None:
         logger.info("Initial context artifact: %s", artifact)
 
 
+def _write_human_input_ledger(
+    run_dir: str, repository_context: dict, context_source: dict
+) -> str:
+    brief = repository_context.get("research_brief", {})
+    path = Path(run_dir) / "human-input-ledger.json"
+    path.write_text(json.dumps({
+        "clarification_answers": brief.get("clarification_answers", []),
+        "user_answers": repository_context.get("user_answers", []),
+        "inquiry_ledger": repository_context.get("inquiry_ledger", []),
+        "approved_architecture_decisions": repository_context.get(
+            "approved_architecture_decisions", []
+        ),
+        "context_hints_path": context_source.get("context_hints_path"),
+        "human_gates": context_source.get("human_gates", []),
+    }, indent=2, ensure_ascii=False), encoding="utf-8")
+    return str(path.resolve())
+
+
 def _repository_gaps(report: dict) -> list[dict]:
     return [
         item for item in report.get("missing_context", [])
@@ -394,7 +412,11 @@ def _load_user_answers(path: str | None) -> list[dict[str, str]]:
     if not isinstance(answers, list):
         raise ValueError("User answers file must contain a list or an answers list")
     return [
-        {"question": str(item["question"]), "answer": str(item["answer"])}
+        {
+            "question": str(item["question"]),
+            "answer": str(item["answer"]),
+            "authority": str(item.get("authority", "authoritative_requirement")),
+        }
         for item in answers
         if isinstance(item, dict) and item.get("question") and item.get("answer")
     ]
@@ -566,7 +588,19 @@ def _collect_user_answers(
             if action in {"a", "answer"}:
                 answer = input("Answer:\n> ").strip()
                 if answer:
-                    answers.append({"question": item["question"], "answer": answer})
+                    authority = input(
+                        "Treat as [R]equirement/decision, repository [H]int, implementation "
+                        "[I]dea, or unverified [F]act? [R]: "
+                    ).strip().lower()
+                    authority = {
+                        "h": "repository_hint", "hint": "repository_hint",
+                        "i": "implementation_hypothesis", "idea": "implementation_hypothesis",
+                        "f": "unverified_fact", "fact": "unverified_fact",
+                    }.get(authority, "authoritative_requirement")
+                    answers.append({
+                        "question": item["question"], "answer": answer,
+                        "authority": authority,
+                    })
             elif action in {"r", "research"}:
                 research_questions.append({
                     "question": item["question"],
@@ -583,7 +617,7 @@ def _collect_user_answers(
     }
     template = {
         "answers": [*answers, *[
-            {"question": item["question"], "answer": ""}
+            {"question": item["question"], "answer": "", "authority": "authoritative_requirement"}
             for item in questions
             if question_key(item["question"]) not in answered
         ]]
@@ -1049,6 +1083,9 @@ def planning_flow(
         final_state["plan"]["status"],
     )
     paths = save_plan_outputs(final_state, run_dir)
+    paths["human_input_ledger"] = _write_human_input_ledger(
+        run_dir, repository_context, context_source
+    )
     return {
         "plan": final_state["plan"],
         "paths": paths,

@@ -41,10 +41,11 @@ def grounding_preflight(plan: dict, repo_path: str) -> list[dict]:
         missing = []
         if not evidence_paths:
             missing.append("evidence_file")
-        if subject and not re.search(rf"\b{re.escape(subject)}\b", evidence_text):
-            missing.append("subject")
-        if member and not re.search(rf"\b{re.escape(member)}\b", evidence_text):
-            missing.append("member")
+        if claim.get("scope") in relationship_scopes:
+            if subject and not re.search(rf"\b{re.escape(subject)}\b", evidence_text):
+                missing.append("subject")
+            if member and not re.search(rf"\b{re.escape(member)}\b", evidence_text):
+                missing.append("member")
         evidence_symbols = [
             reference.split(":", 1)[1]
             for reference in claim.get("evidence", []) if ":" in reference
@@ -77,6 +78,10 @@ def grounding_preflight(plan: dict, repo_path: str) -> list[dict]:
                 "member": member,
                 "evidence": claim.get("evidence", []),
                 "reason": "repository_grounding_not_found",
+                "validation_mode": (
+                    "subject_member_relationship"
+                    if claim.get("scope") in relationship_scopes else "evidence_file"
+                ),
                 "missing": missing,
                 "remediation": claim.get("remediation", "Trace and map the missing value."),
             })

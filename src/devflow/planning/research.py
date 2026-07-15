@@ -67,18 +67,18 @@ def apply_user_answers_to_context(
     report: dict,
     answers: list[dict[str, str]],
 ) -> None:
-    answer_by_key = {
-        question_key(item["question"]): item["answer"] for item in answers
-    }
+    answer_by_key = {question_key(item["question"]): item for item in answers}
     unresolved = []
     for item in report.get("missing_context", []):
         key = question_key(item.get("description", ""))
-        answer = answer_by_key.get(key)
+        answer_item = answer_by_key.get(key)
+        answer = answer_item.get("answer") if answer_item else None
         if item.get("kind") == "user_decision" and answer:
+            authority = answer_item.get("authority", "authoritative_requirement")
             report.setdefault("question_resolutions", []).append({
                 "question": item["description"],
                 "resolution": answer,
-                "source": "user input",
+                "source": f"user input ({authority})",
             })
         else:
             unresolved.append(item)
