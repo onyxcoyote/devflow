@@ -13,6 +13,7 @@ from devflow.code_review.models import get_code_review_model
 from devflow.code_review.tasks import _run_command
 
 from .schemas import ImplementationProposal
+from .grounding import grounding_preflight
 
 
 MAX_SOURCE_CHARS = 80_000
@@ -192,6 +193,32 @@ def implementation_flow(
         f"Baseline: {'passed' if all(item['passed'] for item in baseline_results) else 'failed'} "
         f"({len(baseline_results)} checks); {baseline_path.resolve()}"
     )
+    grounding_failures = grounding_preflight(plan, config.repo_path)
+    grounding_path = run_dir / "grounding-preflight.json"
+    grounding_path.write_text(json.dumps({
+        "passed": not grounding_failures,
+        "failures": grounding_failures,
+    }, indent=2), encoding="utf-8")
+    if grounding_failures:
+        print("Implementation stopped: unsupported existing-code claims in approved plan.")
+        for failure in grounding_failures:
+            print(f"  - {failure['claim']}: {failure['reason']}")
+        proposal = {
+            "status": "blocked",
+            "summary": "Implementation stopped at repository-grounding preflight.",
+            "replacements": [],
+            "deviations": [],
+            "questions": [
+                "Return unsupported ownership, availability, or data-flow claims to context."
+            ],
+        }
+        proposal_path = run_dir / "proposal.json"
+        proposal_path.write_text(json.dumps(proposal, indent=2), encoding="utf-8")
+        return {"proposal": proposal, "applied": False, "paths": {
+            "proposal": str(proposal_path.resolve()),
+            "baseline": str(baseline_path.resolve()),
+            "grounding_preflight": str(grounding_path.resolve()),
+        }}
     impact_context = _load_impact_context(resolved_plan_path)
     planned_paths, _ = _planned_sources(plan, config.repo_path)
     additional_paths = [

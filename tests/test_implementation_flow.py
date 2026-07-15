@@ -14,8 +14,49 @@ except ModuleNotFoundError as error:
         raise unittest.SkipTest("Prefect is not installed in the test environment") from error
     raise
 
+from devflow.implementation.grounding import grounding_preflight
+
 
 class ImplementationEditTests(unittest.TestCase):
+    def test_grounding_preflight_rejects_member_on_wrong_object(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            target = root / "database.ts"
+            target.write_text("interface Snapshot { statsSlice: number }\n", encoding="utf-8")
+            plan = {"grounding_claims": [{
+                "claim": "Player exposes statsSlice.",
+                "scope": "code_ownership",
+                "source": "repository",
+                "status": "verified",
+                "subject": "Player",
+                "member": "statsSlice",
+                "evidence": ["database.ts:Snapshot"],
+                "remediation": "Trace or add the mapping to Player.",
+            }]}
+
+            failures = grounding_preflight(plan, temp_dir)
+
+            self.assertEqual(failures[0]["reason"], "repository_grounding_not_found")
+            self.assertIn("subject", failures[0]["missing"])
+
+    def test_grounding_preflight_accepts_grounded_membership(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            target = root / "player.ts"
+            target.write_text("interface Player { statsSlice: number }\n", encoding="utf-8")
+            plan = {"grounding_claims": [{
+                "claim": "Player exposes statsSlice.",
+                "scope": "type_membership",
+                "source": "repository",
+                "status": "verified",
+                "subject": "Player",
+                "member": "statsSlice",
+                "evidence": ["player.ts:Player"],
+                "remediation": "",
+            }]}
+
+            self.assertEqual(grounding_preflight(plan, temp_dir), [])
+
     def test_reads_and_applies_exact_planned_replacement(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

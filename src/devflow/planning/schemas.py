@@ -2,7 +2,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-PLAN_SCHEMA_VERSION = "portable-v1"
+PLAN_SCHEMA_VERSION = "portable-v2"
 PLAN_STRUCTURED_OUTPUT_METHOD = "function_calling"
 
 ShortText = Annotated[
@@ -65,6 +65,28 @@ class PlanDecision(PlanSchema):
     source: Literal["repository", "user", "planner"]
 
 
+class GroundingClaim(PlanSchema):
+    claim: DetailText
+    scope: Literal[
+        "requirement", "data_existence", "code_ownership", "code_availability",
+        "type_membership", "data_flow", "current_behavior", "design_proposal",
+    ]
+    source: Literal["repository", "user", "planner"]
+    status: Literal["verified", "unverified", "proposed"]
+    subject: ShortText = Field(
+        description="Claimed object, type, or component; empty when not applicable."
+    )
+    member: ShortText = Field(
+        description="Claimed field, method, or value; empty when not applicable."
+    )
+    evidence: list[ShortText] = Field(
+        description="Repository path:symbol evidence; return [] when unverified or non-repository."
+    )
+    remediation: DetailText = Field(
+        description="How to verify or implement the claim; empty when already verified."
+    )
+
+
 class PlanRevision(PlanSchema):
     based_on: str | None = Field(
         description="Previous plan path, or null for an initial plan."
@@ -97,6 +119,12 @@ class DevelopmentPlan(PlanSchema):
     )
     decisions: list[PlanDecision] = Field(
         description="Resolved and unresolved decisions. Return [] if empty; maximum 20 items."
+    )
+    grounding_claims: list[GroundingClaim] = Field(
+        description=(
+            "Every material repository, ownership, availability, type-membership, and data-flow "
+            "claim used by the plan. Return [] only when the plan makes no such claims."
+        )
     )
     acceptance_criteria: list[DetailText] = Field(
         description="Acceptance criteria. Return [] if empty; maximum 30 items."

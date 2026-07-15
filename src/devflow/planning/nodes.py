@@ -46,6 +46,30 @@ def _plan_quality_issue(plan: dict) -> str | None:
             "provide the recommended implementation path even when a user decision remains"
         )
     if plan["status"] == "ready":
+        code_scopes = {
+            "code_ownership", "code_availability", "type_membership",
+            "data_flow", "current_behavior",
+        }
+        unsupported = [
+            item.get("claim", "") for item in plan.get("grounding_claims", [])
+            if item.get("scope") in code_scopes and (
+                item.get("status") == "unverified"
+                or (
+                    item.get("status") == "verified"
+                    and item.get("source") != "repository"
+                )
+                or (
+                    item.get("status") == "verified"
+                    and not item.get("evidence")
+                )
+            )
+        ]
+        if unsupported:
+            return (
+                "status=ready contains unsupported existing-code claims: "
+                + "; ".join(unsupported)
+                + ". Request repository context or explicitly propose the missing mapping/change"
+            )
         if plan.get("outstanding_items"):
             return "status=ready cannot contain outstanding_items"
         unresolved = [
@@ -115,6 +139,13 @@ def make_plan_node(model, compact_retry_model, logger):
             "evidence source. Source excerpts are provided only for files approved by context; "
             "use them directly for detailed schemas and signatures instead of requesting the "
             "same repository facts again. Design recommendations may be planner reasoning.\n"
+            "Audit semantic claims, not only dotted identifiers. Statements such as Player's "
+            "statsSlice, available on Player, or HistoryService provides the total are ownership, "
+            "availability, or data-flow claims. Record every material claim in grounding_claims. "
+            "A human statement that data exists in a database does not verify that a particular "
+            "object exposes a field. Existing-code claims are verified only with repository "
+            "path:symbol evidence. If the bridge is absent, mark it unverified and request context, "
+            "or mark it proposed and include the concrete mapping/type changes.\n"
             "Each proposed change must name one file and describe its responsibility. Include "
             "tests and validation in verification and acceptance criteria.\n"
             "Make ordinary engineering decisions when repository evidence supports them. The "
@@ -296,6 +327,7 @@ def make_plan_node(model, compact_retry_model, logger):
                     "suggested_action": "Inspect plan_attempts in evidence.json and retry with a different model or limits.",
                 }],
                 decisions=[],
+                grounding_claims=[],
                 acceptance_criteria=[],
                 verification=[],
                 risks=[],
@@ -369,6 +401,16 @@ def create_plan_report(state: PlanningState) -> dict:
             f"({item['status']}, source: {item['source']}). {item['rationale']}"
         )
     if not plan["decisions"]:
+        lines.append("- None reported.")
+
+    lines.extend(["", "## Grounding claims", ""])
+    for item in plan.get("grounding_claims", []):
+        evidence = ", ".join(item.get("evidence", [])) or "None"
+        lines.append(
+            f"- **{item['status']} {item['scope']}:** {item['claim']} "
+            f"(source: {item['source']}; evidence: {evidence})"
+        )
+    if not plan.get("grounding_claims"):
         lines.append("- None reported.")
 
     for title, key in (

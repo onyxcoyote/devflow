@@ -35,6 +35,27 @@ class PlanQualityTests(unittest.TestCase):
         issue = _plan_quality_issue(plan)
         self.assertIn("defers a known decision", issue)
 
+    def test_ready_plan_rejects_human_sourced_code_ownership_claim(self):
+        plan = {
+            "status": "ready",
+            "design_summary": "Read the prior total.",
+            "outstanding_items": [],
+            "decisions": [],
+            "proposed_changes": [{"change": "Read Player's statsSlice.", "reason": "Sum totals."}],
+            "grounding_claims": [{
+                "claim": "Player exposes statsSlice.",
+                "scope": "code_ownership",
+                "source": "user",
+                "status": "verified",
+                "evidence": [],
+            }],
+        }
+
+        issue = _plan_quality_issue(plan)
+
+        self.assertIn("unsupported existing-code claims", issue)
+        self.assertIn("Player exposes statsSlice", issue)
+
 
 class FakeCompletion:
     def model_dump(self, mode=None):
@@ -104,6 +125,7 @@ class CreatePlanReportTests(unittest.TestCase):
             assumptions=[],
             outstanding_items=[],
             decisions=[],
+            grounding_claims=[],
             acceptance_criteria=["The command produces plan.md."],
             verification=["Run unit tests."],
             risks=[],
@@ -148,6 +170,7 @@ class CreatePlanTests(unittest.TestCase):
             proposed_changes=[self.proposed_change()],
             outstanding_items=[],
             decisions=[],
+            grounding_claims=[],
             acceptance_criteria=["A plan is saved."],
             verification=["Run tests."],
             risks=[],
@@ -181,6 +204,7 @@ class CreatePlanTests(unittest.TestCase):
             proposed_changes=[self.proposed_change()],
             outstanding_items=[],
             decisions=[],
+            grounding_claims=[],
             acceptance_criteria=[],
             verification=[],
             risks=[],
@@ -206,6 +230,7 @@ class CreatePlanTests(unittest.TestCase):
             proposed_changes=[],
             outstanding_items=[],
             decisions=[],
+            grounding_claims=[],
             acceptance_criteria=[],
             verification=[],
             risks=[],
@@ -249,6 +274,7 @@ class CreatePlanTests(unittest.TestCase):
                 "suggested_action": "Collect the missing module context.",
             }],
             decisions=[],
+            grounding_claims=[],
             acceptance_criteria=[],
             verification=[],
             risks=[],
