@@ -12,6 +12,7 @@ from devflow.repository_context.serena import (
     SERENA_STRUCTURED_OUTPUT_METHOD,
     SerenaContextRunError,
     SerenaContextReport,
+    _SerenaReportGenerationError,
     ResearchBrief,
     ContextReconciliation,
     _call_signature,
@@ -21,6 +22,7 @@ from devflow.repository_context.serena import (
     _langchain_tools,
     _is_unscoped_pattern_search,
     _is_degenerate_explorer_output,
+    _exception_tree,
     _repetition_score,
     _round_focus_instruction,
     _should_continue,
@@ -468,6 +470,17 @@ class SerenaReportSchemaTests(unittest.TestCase):
 
 
 class SerenaFailureArtifactTests(unittest.TestCase):
+    def test_exception_tree_preserves_nested_details(self):
+        child = _SerenaReportGenerationError([{
+            "stage": "context_report", "attempt": 1, "message": "invalid field",
+        }])
+        error = ExceptionGroup("task group failed", [child])
+
+        tree = _exception_tree(error)
+
+        self.assertEqual(tree["type"], "ExceptionGroup")
+        self.assertEqual(tree["children"][0]["details"][0]["message"], "invalid field")
+
     def test_writes_diagnostic_and_raises_hard_failure(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config = SimpleNamespace(output_dir=temp_dir)

@@ -241,6 +241,24 @@ class _SerenaReportGenerationError(RuntimeError):
         self.details = errors
 
 
+class _SerenaReconciliationError(RuntimeError):
+    def __init__(self, errors: list[dict[str, Any]]):
+        super().__init__("Serena context reconciliation failed after two attempts")
+        self.details = errors
+
+
+def _exception_tree(error: BaseException) -> dict[str, Any]:
+    return {
+        "type": type(error).__name__,
+        "message": str(error),
+        "details": getattr(error, "details", None),
+        "children": [
+            _exception_tree(child)
+            for child in getattr(error, "exceptions", ())
+        ],
+    }
+
+
 class _DegenerateExplorerOutput(RuntimeError):
     def __init__(self, details: dict[str, Any]):
         super().__init__(
@@ -1098,6 +1116,7 @@ async def _explore_round(
             "and unresolved items.\n\n" + report_prompt
         ),
     ]
+    report_dict = None
     for attempt, prompt in enumerate(prompts, start=1):
         try:
             purpose = (
@@ -1107,46 +1126,84 @@ async def _explore_round(
             )
             report = await request_limiter.invoke(structured_report_model, prompt, purpose)
             report_dict = report.model_dump()
-            print("Context stage: reconcile research impact")
-            reconciliation = await request_limiter.invoke(
-                reconciliation_model,
-                (
-                    "Reconcile the grounded research answers into implementation scope. Identify "
-                    "what the discoveries change about relevant files, concrete types, callers, "
-                    "consumers, mappings, serialization, persistence, and state lifecycle. Return "
-                    "only deltas supported by the report or current transcript. Reclassify existing "
-                    "files when evidence strengthens their role. Expose new repository gaps instead "
-                    "of guessing. Do not duplicate files merely to change their role or reason.\n\n"
-                    f"DEVELOPMENT REQUEST\n{request}\n\n"
-                    f"RESEARCH BRIEF\n{json.dumps(research_brief or {}, ensure_ascii=False)}\n\n"
-                    f"CURRENT REPORT\n{json.dumps(report_dict, ensure_ascii=False)}\n\n"
-                    f"CURRENT ROUND TRANSCRIPT\n{transcript_text}"
-                ),
-                "Reconcile answers into context scope",
-            )
-            reconciliation_stats = _apply_reconciliation(
-                report_dict, reconciliation.model_dump()
-            )
-            _apply_brief_coverage(report_dict, research_brief or {})
-            print(
-                "Answer reconciled: "
-                f"files added={reconciliation_stats['files_added']}, "
-                f"roles upgraded={reconciliation_stats['roles_upgraded']}, "
-                f"symbols added={reconciliation_stats['symbols_added']}, "
-                f"new gaps={reconciliation_stats['new_gaps']}"
-            )
-            return report_dict, events, calls_attempted, attempt_errors
+            break
         except Exception as error:
-            attempt_errors.append({
+            failure = {
+                "stage": "context_report",
                 "attempt": attempt,
                 "type": type(error).__name__,
                 "message": str(error),
                 "round": round_number,
                 "transcript_events_included": included_events,
                 "transcript_events_total": len(events),
-            })
+            }
+            attempt_errors.append(failure)
+            print(
+                f"CONTEXT REPORT ERROR attempt {attempt}: "
+                f"{failure['type']}: {failure['message'][:1000]}"
+            )
 
-    raise _SerenaReportGenerationError(attempt_errors)
+    if report_dict is None:
+        raise _SerenaReportGenerationError(attempt_errors)
+
+    print("Context stage: reconcile research impact")
+    reconciliation_prompt = (
+        "Reconcile the grounded research answers into implementation scope. Identify "
+        "what the discoveries change about relevant files, concrete types, callers, "
+        "consumers, mappings, serialization, persistence, and state lifecycle. Return "
+        "only deltas supported by the report or current transcript. Reclassify existing "
+        "files when evidence strengthens their role. Expose new repository gaps instead "
+        "of guessing. Do not duplicate files merely to change their role or reason.\n\n"
+        f"DEVELOPMENT REQUEST\n{request}\n\n"
+        f"RESEARCH BRIEF\n{json.dumps(research_brief or {}, ensure_ascii=False)}\n\n"
+        f"CURRENT REPORT\n{json.dumps(report_dict, ensure_ascii=False)}\n\n"
+        f"CURRENT ROUND TRANSCRIPT\n{transcript_text}"
+    )
+    reconciliation_errors = []
+    reconciliation = None
+    for attempt in (1, 2):
+        try:
+            reconciliation = await request_limiter.invoke(
+                reconciliation_model,
+                (
+                    reconciliation_prompt if attempt == 1 else
+                    "Retry with a compact reconciliation delta. Return every required field and "
+                    "use [] when a list is empty.\n\n" + reconciliation_prompt
+                ),
+                (
+                    "Reconcile answers into context scope"
+                    if attempt == 1 else "Retry compact context reconciliation"
+                ),
+            )
+            break
+        except Exception as error:
+            failure = {
+                "stage": "answer_reconciliation",
+                "attempt": attempt,
+                "type": type(error).__name__,
+                "message": str(error),
+                "round": round_number,
+            }
+            reconciliation_errors.append(failure)
+            print(
+                f"CONTEXT RECONCILIATION ERROR attempt {attempt}: "
+                f"{failure['type']}: {failure['message'][:1000]}"
+            )
+    if reconciliation is None:
+        raise _SerenaReconciliationError(reconciliation_errors)
+
+    reconciliation_stats = _apply_reconciliation(
+        report_dict, reconciliation.model_dump()
+    )
+    _apply_brief_coverage(report_dict, research_brief or {})
+    print(
+        "Answer reconciled: "
+        f"files added={reconciliation_stats['files_added']}, "
+        f"roles upgraded={reconciliation_stats['roles_upgraded']}, "
+        f"symbols added={reconciliation_stats['symbols_added']}, "
+        f"new gaps={reconciliation_stats['new_gaps']}"
+    )
+    return report_dict, events, calls_attempted, attempt_errors
 
 
 async def _explore_with_session(
@@ -1377,6 +1434,7 @@ def run_serena_context(
                 "exception_message": str(error),
                 "exception_repr": repr(error),
                 "details": getattr(error, "details", None),
+                "exception_tree": _exception_tree(error),
                 "traceback": traceback.format_exc(),
                 "serena_log": str(log_path.resolve()),
             }, indent=2, ensure_ascii=False, default=str),
