@@ -24,6 +24,7 @@ class SerenaContextConfig:
     config_sources: tuple[str, ...]
     context_input_target_tokens: int = 48_000
     max_round_tool_result_chars: int = 100_000
+    max_explorer_output_tokens: int = 1_200
 
 
 def load_serena_context_config(
@@ -94,5 +95,8 @@ def load_serena_context_config(
         ),
         max_round_tool_result_chars=max(
             20_000, int(settings.get("max_round_tool_result_chars", 100_000))
+        ),
+        max_explorer_output_tokens=max(
+            300, min(4_000, int(settings.get("max_explorer_output_tokens", 1_200)))
         ),
     )

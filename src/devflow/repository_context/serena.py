@@ -241,6 +241,14 @@ class _SerenaReportGenerationError(RuntimeError):
         self.details = errors
 
 
+class _DegenerateExplorerOutput(RuntimeError):
+    def __init__(self, details: dict[str, Any]):
+        super().__init__(
+            "Explorer returned repetitive output without Serena tool calls"
+        )
+        self.details = details
+
+
 class _ModelRequestLimiter:
     def __init__(self, minimum_interval_seconds: float, input_target_tokens: int | None = None):
         self.minimum_interval_seconds = minimum_interval_seconds
@@ -492,6 +500,22 @@ def _tool_result_text(result, max_chars: int) -> str:
 
 def _call_signature(name: str, arguments: dict[str, Any]) -> str:
     return json.dumps([name, arguments], sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _repetition_score(value: str) -> float:
+    words = re.findall(r"\w+", value.lower())
+    if len(words) < 40:
+        return 0.0
+    grams = [tuple(words[index:index + 4]) for index in range(len(words) - 3)]
+    return 1.0 - (len(set(grams)) / len(grams))
+
+
+def _is_degenerate_explorer_output(value: str) -> bool:
+    if len(value) < 500:
+        return False
+    lines = [line.strip() for line in value.splitlines() if line.strip()]
+    repeated_lines = len(lines) >= 8 and len(set(lines)) / len(lines) < 0.35
+    return repeated_lines or _repetition_score(value) >= 0.72
 
 
 def _is_unscoped_pattern_search(name: str, arguments: dict[str, Any]) -> bool:
@@ -818,7 +842,22 @@ async def _explore_round(
         messages.append(response)
         tool_calls = response.tool_calls or []
         if not tool_calls:
-            events.append({"assistant_summary": str(response.content)})
+            summary = str(response.content)
+            if _is_degenerate_explorer_output(summary):
+                details = {
+                    "round": round_number,
+                    "response_chars": len(summary),
+                    "repetition_score": round(_repetition_score(summary), 3),
+                    "response_preview": summary[:500],
+                    "live_transcript": str(live_transcript_path.resolve()),
+                }
+                events.append({"degenerate_explorer_output": details})
+                live_transcript_path.write_text(
+                    json.dumps(events, indent=2, ensure_ascii=False, default=str),
+                    encoding="utf-8",
+                )
+                raise _DegenerateExplorerOutput(details)
+            events.append({"assistant_summary": summary[:1_000]})
             break
         for call_index, call in enumerate(tool_calls):
             while calls_attempted >= active_budget and active_budget < max_tool_call_budget:
@@ -1132,7 +1171,10 @@ async def _explore_with_session(
     if not tools:
         raise ValueError("Serena exposed no permitted read-only retrieval tools")
 
-    model = get_code_review_model(config.model)
+    model = get_code_review_model(
+        config.model,
+        max_output_tokens=config.max_explorer_output_tokens,
+    )
     report_model = get_code_review_model(
         config.model,
         max_output_tokens=config.max_report_output_tokens,
@@ -1395,6 +1437,7 @@ def run_serena_context(
             "max_tool_result_chars": config.max_tool_result_chars,
             "max_transcript_chars": config.max_transcript_chars,
             "max_report_output_tokens": config.max_report_output_tokens,
+            "max_explorer_output_tokens": config.max_explorer_output_tokens,
             "context_input_target_tokens": config.context_input_target_tokens,
             "max_round_tool_result_chars": config.max_round_tool_result_chars,
             "schema_version": SERENA_SCHEMA_VERSION,

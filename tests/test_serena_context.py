@@ -20,6 +20,8 @@ from devflow.repository_context.serena import (
     _bounded_transcript,
     _langchain_tools,
     _is_unscoped_pattern_search,
+    _is_degenerate_explorer_output,
+    _repetition_score,
     _round_focus_instruction,
     _should_continue,
     _tool_result_text,
@@ -102,6 +104,18 @@ class SerenaToolFilteringTests(unittest.TestCase):
             "relative_path": "server",
         }))
         self.assertFalse(_is_unscoped_pattern_search("find_symbol", {"name_path": "Chart"}))
+
+    def test_detects_repetitive_explorer_output(self):
+        loop = ("Let's search for another related definition. " * 80).strip()
+        normal = (
+            "The repository evidence indicates that history is calculated in the service, "
+            "mapped through the API response, and rendered by the client. No additional tool "
+            "call is needed because each active question has a cited resolution."
+        )
+
+        self.assertTrue(_is_degenerate_explorer_output(loop))
+        self.assertGreater(_repetition_score(loop), 0.72)
+        self.assertFalse(_is_degenerate_explorer_output(normal))
 
     def test_unanswered_brief_question_prevents_sufficient_status(self):
         report = complete_report()

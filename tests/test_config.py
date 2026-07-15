@@ -46,6 +46,7 @@ output_dir = "serena-output"
             self.assertEqual(plan.max_output_tokens, 8000)
             self.assertEqual(plan.compact_retry_output_tokens, 4000)
             self.assertEqual(serena.output_dir, str(repo / "serena-output"))
+            self.assertEqual(serena.max_explorer_output_tokens, 1200)
 
     def test_serena_uses_context_output_default(self):
         with tempfile.TemporaryDirectory() as directory:
