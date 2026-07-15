@@ -1,6 +1,13 @@
 import unittest
 import tempfile
+import json
 from pathlib import Path
+
+from devflow.planning.human_input import (
+    apply_human_input_ledger,
+    load_human_input_ledger,
+    reconcile_human_input_entries,
+)
 
 from devflow.planning.research import (
     apply_user_answers_to_context,
@@ -21,6 +28,70 @@ from devflow.planning.research import (
 
 
 class PlanningFlowTests(unittest.TestCase):
+    def test_human_input_ledger_deduplicates_hint_and_keeps_it_active(self):
+        repeated = {
+            "question": "What is the exact structure and location of file x?",
+            "status": "human_answered",
+            "answer": "/full/path",
+            "source": "human",
+            "authority": "repository_hint",
+        }
+
+        entries = reconcile_human_input_entries([repeated], [repeated])
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["disposition"], "research_next")
+
+    def test_load_human_input_ledger_ignores_gate_history(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir, "human-input-ledger.json")
+            path.write_text(json.dumps({
+                "clarification_answers": [{
+                    "question": "Where is file x?",
+                    "status": "human_answered",
+                    "answer": "/full/path",
+                    "authority": "repository_hint",
+                }],
+                "inquiry_ledger": [],
+                "human_gates": [{"gate": "old", "approved": False}],
+            }), encoding="utf-8")
+
+            ledger = load_human_input_ledger(str(path))
+
+            self.assertEqual(len(ledger["entries"]), 1)
+            self.assertNotIn("human_gates", ledger)
+
+    def test_apply_ledger_routes_only_active_research_back_to_context(self):
+        report = {
+            "status": "needs_repository_context",
+            "missing_context": [
+                {"kind": "repository", "description": "Resolved question"},
+                {"kind": "repository", "description": "UI mapping question"},
+            ],
+            "question_resolutions": [],
+        }
+        ledger = {"entries": [{
+            "question": "Resolved question",
+            "status": "resolved",
+            "answer": "The plan established the answer.",
+            "resolution": "The plan established the answer.",
+            "authority": "authoritative_requirement",
+            "disposition": "resolved",
+        }, {
+            "question": "UI mapping question",
+            "status": "human_answered",
+            "answer": "Start in Intel.vue.",
+            "authority": "repository_hint",
+            "disposition": "implementation_investigation",
+        }]}
+
+        hints = apply_human_input_ledger(report, ledger)
+
+        self.assertEqual(hints, {})
+        self.assertEqual(report["missing_context"], [])
+        self.assertEqual(len(report["question_resolutions"]), 1)
+        self.assertEqual(len(report["implementation_investigations"]), 1)
+
     def test_impact_delta_cannot_rewrite_established_resolutions(self):
         report = {
             "status": "sufficient",

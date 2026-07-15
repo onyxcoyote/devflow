@@ -11,6 +11,11 @@ from devflow.repository_context.config import SerenaContextConfig
 from devflow.repository_context.flow import serena_context_flow
 
 from .config import PlanningConfig
+from .human_input import (
+    apply_human_input_ledger,
+    load_human_input_ledger,
+    reconcile_human_input_entries,
+)
 from .artifacts import load_context_artifact, load_previous_plan, repository_head
 from .research import (
     MAX_SUPPLEMENTAL_CONTEXT_ROUNDS,
@@ -142,16 +147,28 @@ def _write_human_input_ledger(
     run_dir: str, repository_context: dict, context_source: dict
 ) -> str:
     brief = repository_context.get("research_brief", {})
+    entries = reconcile_human_input_entries(
+        brief.get("clarification_answers", []),
+        repository_context.get("inquiry_ledger", []),
+    )
     path = Path(run_dir) / "human-input-ledger.json"
     path.write_text(json.dumps({
+        "version": 2,
         "clarification_answers": brief.get("clarification_answers", []),
         "user_answers": repository_context.get("user_answers", []),
-        "inquiry_ledger": repository_context.get("inquiry_ledger", []),
+        "inquiry_ledger": entries,
+        "active_research": [
+            item for item in entries if item["disposition"] == "research_next"
+        ],
+        "implementation_investigations": [
+            item for item in entries
+            if item["disposition"] == "implementation_investigation"
+        ],
         "approved_architecture_decisions": repository_context.get(
             "approved_architecture_decisions", []
         ),
         "context_hints_path": context_source.get("context_hints_path"),
-        "human_gates": context_source.get("human_gates", []),
+        "gate_history": context_source.get("human_gates", []),
     }, indent=2, ensure_ascii=False), encoding="utf-8")
     return str(path.resolve())
 
@@ -640,6 +657,7 @@ def planning_flow(
     auto_approve: bool = False,
     answers_path: str | None = None,
     context_hints_path: str | None = None,
+    human_input_ledger_path: str | None = None,
     architecture_decisions_path: str | None = None,
 ) -> dict:
     logger = get_run_logger()
@@ -649,6 +667,7 @@ def planning_flow(
     previous_plan, resolved_previous_plan_path = load_previous_plan(
         previous_plan_path
     )
+    supplied_ledger = load_human_input_ledger(human_input_ledger_path)
     if context_path:
         repository_context, context_source = load_context_artifact(
             context_path,
@@ -661,6 +680,17 @@ def planning_flow(
                 "\n\nReview this previous implementation plan as a draft. Investigate "
                 "repository facts needed to confirm, correct, or complete it:\n"
                 + json.dumps(previous_plan, ensure_ascii=False)
+            )
+        reusable_entries = [
+            item for item in supplied_ledger.get("entries", [])
+            if item.get("disposition") not in {"optional", "out_of_scope", "superseded"}
+        ]
+        if reusable_entries:
+            discovery_request += (
+                "\n\nPRIOR HUMAN INPUT LEDGER\n"
+                "Respect each item's authority and disposition. Do not ask answered questions "
+                "again. Treat repository hints as search direction, not proof:\n"
+                + json.dumps(reusable_entries, ensure_ascii=False)
             )
         context_result = serena_context_flow(
             discovery_request,
@@ -682,6 +712,13 @@ def planning_flow(
     context_source.setdefault("supplemental_rounds", [])
     supplied_answers = _load_user_answers(answers_path)
     supplied_hints = _load_research_hints(context_hints_path)
+    supplied_hints.update(apply_human_input_ledger(repository_context, supplied_ledger))
+    if human_input_ledger_path:
+        context_source["human_input_ledger_path"] = supplied_ledger["path"]
+        logger.info(
+            "Reused human input ledger: %d deduplicated item(s)",
+            len(supplied_ledger["entries"]),
+        )
     supplied_architecture_decisions = {}
     if architecture_decisions_path:
         values = json.loads(
@@ -692,6 +729,11 @@ def planning_flow(
             for item in values.get("decisions", [])
             if item.get("question") and item.get("decision")
         }
+    for item in supplied_ledger.get("architecture_decisions", []):
+        if isinstance(item, dict) and item.get("question") and item.get("decision"):
+            supplied_architecture_decisions.setdefault(
+                question_key(item["question"]), item["decision"]
+            )
     if supplied_answers:
         apply_user_answers_to_context(repository_context, supplied_answers)
         context_source["user_answers_path"] = str(Path(answers_path).resolve())

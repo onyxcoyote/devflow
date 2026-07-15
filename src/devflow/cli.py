@@ -101,6 +101,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="JSON research-hints file created by a stopped context run.",
     )
     plan.add_argument(
+        "--human-input-ledger",
+        help="Reuse reconciled human answers and active research items from a prior run.",
+    )
+    plan.add_argument(
         "--architecture-decisions",
         help="JSON architecture decisions file created by a stopped planning run.",
     )
@@ -355,6 +359,7 @@ def _run_plan(args: argparse.Namespace) -> int:
                 auto_approve=args.yes,
                 answers_path=args.answers,
                 context_hints_path=args.context_hints,
+                human_input_ledger_path=args.human_input_ledger,
                 architecture_decisions_path=args.architecture_decisions,
             )
         except SerenaContextRunError as error:
