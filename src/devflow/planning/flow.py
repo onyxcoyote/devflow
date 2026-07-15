@@ -15,6 +15,8 @@ from .artifacts import load_context_artifact, load_previous_plan, repository_hea
 from .research import (
     MAX_SUPPLEMENTAL_CONTEXT_ROUNDS,
     MAX_INITIAL_CONTEXT_REFINEMENT_ROUNDS,
+    MAX_IMPACT_CONTEXT_REFINEMENT_ROUNDS,
+    MAX_HUMAN_QUESTION_RESEARCH_ROUNDS,
     apply_user_answers_to_context,
     context_user_questions,
     impact_context_request,
@@ -232,10 +234,12 @@ def _refine_incomplete_context(
     auto_approve: bool,
     logger,
     supplied_hints: dict[str, str] | None = None,
+    phase: str = "initial_context_refinement",
+    max_refinement_rounds: int = MAX_INITIAL_CONTEXT_REFINEMENT_ROUNDS,
 ) -> tuple[str, str | None]:
     refinement_round = sum(
         1 for item in context_source.get("supplemental_rounds", [])
-        if item.get("phase") == "initial_context_refinement"
+        if item.get("phase") == phase
     )
     supplied_hints = dict(supplied_hints or {})
     context_control = repository_context.get("context_control", {})
@@ -268,7 +272,7 @@ def _refine_incomplete_context(
             print(f"  {index}. {item.get('description', '')}")
             if item.get("suggested_action"):
                 print(f"     Next: {item['suggested_action']}")
-        can_continue = refinement_round < MAX_INITIAL_CONTEXT_REFINEMENT_ROUNDS
+        can_continue = refinement_round < max_refinement_rounds
         matching_hints = [
             supplied_hints.get(question_key(item.get("description", "")), "")
             for item in gaps
@@ -322,9 +326,10 @@ def _refine_incomplete_context(
                 "suggested_action": action,
             })
         logger.info(
-            "Running targeted initial-context refinement %d/%d for %d gap(s)",
+            "Running targeted %s refinement %d/%d for %d gap(s)",
+            phase,
             refinement_round,
-            MAX_INITIAL_CONTEXT_REFINEMENT_ROUNDS,
+            max_refinement_rounds,
             len(questions),
         )
         result = serena_context_flow(
@@ -336,13 +341,13 @@ def _refine_incomplete_context(
         report = normalize_supplemental_report(result["report"], questions)
         _log_supplemental_answers(report, logger)
         repository_context.setdefault("supplemental_rounds", []).append({
-            "phase": "initial_context_refinement",
+            "phase": phase,
             "round": refinement_round,
             "questions": questions,
             "report": report,
         })
         context_source.setdefault("supplemental_rounds", []).append({
-            "phase": "initial_context_refinement",
+            "phase": phase,
             "round": refinement_round,
             "paths": result.get("paths", {}),
         })
@@ -510,23 +515,36 @@ def _collect_user_answers(
     auto_approve: bool,
     run_dir: str,
     logger,
-) -> tuple[list[dict[str, str]], str | None]:
+) -> tuple[list[dict[str, str]], list[dict[str, str]], str | None]:
     print("Planning needs user decisions:")
     for index, item in enumerate(questions, start=1):
         print(f"  {index}. {item['question']}")
         if item.get("impact"):
             print(f"     Impact: {item['impact']}")
     answers = []
+    research_questions = []
     if not auto_approve and sys.stdin.isatty():
         for item in questions:
-            answer = input(f"Answer (blank to defer) — {item['question']}\n> ").strip()
-            if answer:
-                answers.append({"question": item["question"], "answer": answer})
-    if len(answers) == len(questions):
+            print(f"Decision: {item['question']}")
+            action = input("[A]nswer, send to repository [R]esearch, or [D]efer? [D]: ").strip().lower()
+            if action in {"a", "answer"}:
+                answer = input("Answer:\n> ").strip()
+                if answer:
+                    answers.append({"question": item["question"], "answer": answer})
+            elif action in {"r", "research"}:
+                research_questions.append({
+                    "question": item["question"],
+                    "impact": item.get("impact", "Repository evidence is required."),
+                })
+    if len(answers) + len(research_questions) == len(questions):
         logger.info("Received %d user decision answer(s)", len(answers))
-        return answers, None
+        logger.info("Routed %d user decision(s) to repository research", len(research_questions))
+        return answers, research_questions, None
 
-    answered = {question_key(item["question"]) for item in answers}
+    answered = {
+        question_key(item["question"])
+        for item in [*answers, *research_questions]
+    }
     template = {
         "answers": [*answers, *[
             {"question": item["question"], "answer": ""}
@@ -538,7 +556,7 @@ def _collect_user_answers(
     path.write_text(json.dumps(template, indent=2), encoding="utf-8")
     print(f"Deferred user decisions: {path.resolve()}")
     print("Fill in each answer, then refine with --answers and --from-plan.")
-    return answers, str(path.resolve())
+    return answers, research_questions, str(path.resolve())
 
 
 @flow(name="development-plan")
@@ -632,7 +650,7 @@ def planning_flow(
         }
     context_questions = context_user_questions(repository_context)
     if context_questions:
-        answers, user_input_path = _collect_user_answers(
+        answers, research_requests, user_input_path = _collect_user_answers(
             context_questions,
             auto_approve=auto_approve,
             run_dir=run_dir,
@@ -640,6 +658,28 @@ def planning_flow(
         )
         if answers:
             apply_user_answers_to_context(repository_context, answers)
+        research_keys = {question_key(item["question"]) for item in research_requests}
+        if research_keys:
+            repository_context["missing_context"] = [
+                item for item in repository_context.get("missing_context", [])
+                if not (
+                    item.get("kind") == "user_decision"
+                    and question_key(item.get("description", "")) in research_keys
+                )
+            ]
+        for item in research_requests:
+            repository_context.setdefault("missing_context", []).append({
+                "kind": "repository",
+                "description": item["question"],
+                "suggested_action": (
+                    "Human explicitly routed this question to repository research; establish the "
+                    "answer with path:symbol evidence instead of treating it as a user decision."
+                ),
+                "related_files": [],
+                "related_symbols": [],
+            })
+        if research_requests:
+            repository_context["status"] = "needs_repository_context"
         if user_input_path is not None:
             logger.info("Planning stopped for unresolved context-level user decisions")
             return {
@@ -649,6 +689,30 @@ def planning_flow(
                 "repository_context": repository_context,
                 "user_input_path": user_input_path,
             }
+        if research_requests:
+            research_completion, research_artifact = _refine_incomplete_context(
+                request,
+                repository_context,
+                context_source,
+                serena_config,
+                run_dir=run_dir,
+                auto_approve=auto_approve,
+                logger=logger,
+                supplied_hints={
+                    question_key(item["question"]): "Resolve with repository evidence."
+                    for item in research_requests
+                },
+                phase="human_question_research",
+                max_refinement_rounds=MAX_HUMAN_QUESTION_RESEARCH_ROUNDS,
+            )
+            if research_completion == "stop":
+                return {
+                    "stopped": True,
+                    "reason": "human_question_research_incomplete",
+                    "context_source": context_source,
+                    "repository_context": repository_context,
+                    "context_input_path": research_artifact,
+                }
         _log_initial_context(repository_context, context_source, logger)
     print("Context stage: impact closure")
     _run_impact_review(
@@ -662,6 +726,8 @@ def planning_flow(
         run_dir=run_dir,
         auto_approve=auto_approve,
         logger=logger,
+        phase="impact_context_refinement",
+        max_refinement_rounds=MAX_IMPACT_CONTEXT_REFINEMENT_ROUNDS,
     )
     if impact_completion == "stop":
         return {
@@ -720,7 +786,7 @@ def planning_flow(
     for round_number in range(1, MAX_SUPPLEMENTAL_CONTEXT_ROUNDS + 1):
         decisions = user_decision_questions(final_state["plan"])
         if decisions:
-            answers, user_input_path = _collect_user_answers(
+            answers, research_requests, user_input_path = _collect_user_answers(
                 decisions,
                 auto_approve=auto_approve,
                 run_dir=run_dir,
@@ -728,6 +794,43 @@ def planning_flow(
             )
             if answers:
                 repository_context.setdefault("user_answers", []).extend(answers)
+            for item in research_requests:
+                repository_context.setdefault("missing_context", []).append({
+                    "kind": "repository",
+                    "description": item["question"],
+                    "suggested_action": (
+                        "Human routed this planner decision to repository research; verify the "
+                        "ownership, availability, or data flow with path:symbol evidence."
+                    ),
+                    "related_files": [],
+                    "related_symbols": [],
+                })
+            if research_requests:
+                repository_context["status"] = "needs_repository_context"
+                research_completion, research_artifact = _refine_incomplete_context(
+                    request,
+                    repository_context,
+                    context_source,
+                    serena_config,
+                    run_dir=run_dir,
+                    auto_approve=auto_approve,
+                    logger=logger,
+                    supplied_hints={
+                        question_key(item["question"]): "Resolve with repository evidence."
+                        for item in research_requests
+                    },
+                    phase="planner_human_question_research",
+                    max_refinement_rounds=MAX_HUMAN_QUESTION_RESEARCH_ROUNDS,
+                )
+                if research_completion == "stop":
+                    return {
+                        "stopped": True,
+                        "reason": "planner_human_question_research_incomplete",
+                        "context_source": context_source,
+                        "repository_context": repository_context,
+                        "context_input_path": research_artifact,
+                    }
+            if answers or research_requests:
                 logger.info("Retrying planning with user answers")
                 final_state = run_planning_graph(
                     _planning_state(request, config, repository_context, context_source, previous_plan),
