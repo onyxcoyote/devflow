@@ -12,9 +12,12 @@ from devflow.repository_context.serena import (
     SERENA_STRUCTURED_OUTPUT_METHOD,
     SerenaContextRunError,
     SerenaContextReport,
+    ResearchBrief,
     _call_signature,
+    _apply_brief_coverage,
     _bounded_transcript,
     _langchain_tools,
+    _is_unscoped_pattern_search,
     _round_focus_instruction,
     _should_continue,
     _tool_result_text,
@@ -86,6 +89,48 @@ class SerenaToolFilteringTests(unittest.TestCase):
             "paths_exclude_glob": ".devflow/**/*",
             "substring_pattern": "class .*Chart",
         }))
+
+    def test_rejects_only_unscoped_pattern_searches(self):
+        self.assertTrue(_is_unscoped_pattern_search("search_for_pattern", {
+            "substring_pattern": "class .*Chart",
+            "paths_exclude_glob": ".devflow/**/*",
+        }))
+        self.assertFalse(_is_unscoped_pattern_search("search_for_pattern", {
+            "substring_pattern": "class .*Chart",
+            "relative_path": "server",
+        }))
+        self.assertFalse(_is_unscoped_pattern_search("find_symbol", {"name_path": "Chart"}))
+
+    def test_unanswered_brief_question_prevents_sufficient_status(self):
+        report = complete_report()
+        brief = {
+            "research_questions": ["Where is chart state persisted?"],
+            "clarification_answers": [{
+                "question": "Does chart mean history chart?",
+                "status": "human_answered",
+                "answer": "Yes",
+            }],
+        }
+
+        ledger = _apply_brief_coverage(report, brief)
+
+        self.assertEqual(report["status"], "needs_repository_context")
+        self.assertEqual(ledger[0]["status"], "human_answered")
+        self.assertEqual(ledger[1]["status"], "unresolved")
+        self.assertEqual(report["missing_context"][0]["kind"], "repository")
+
+    def test_grounded_resolution_closes_brief_question(self):
+        question = "Where is chart state persisted?"
+        report = complete_report(question_resolutions=[{
+            "question": question,
+            "resolution": "HistoryService persists it.",
+            "source": "server/services/history.ts:HistoryService",
+        }])
+
+        ledger = _apply_brief_coverage(report, {"research_questions": [question]})
+
+        self.assertEqual(report["status"], "sufficient")
+        self.assertEqual(ledger[0]["status"], "self_answered")
 
 
 class SerenaResultFormattingTests(unittest.TestCase):
@@ -350,8 +395,6 @@ class SerenaReportSchemaTests(unittest.TestCase):
             ))
 
     def test_schema_is_portable_and_fully_required(self):
-        schema = SerenaContextReport.model_json_schema()
-
         def check_objects(value):
             if isinstance(value, dict):
                 if value.get("type") == "object":
@@ -365,7 +408,8 @@ class SerenaReportSchemaTests(unittest.TestCase):
                 for nested in value:
                     check_objects(nested)
 
-        check_objects(schema)
+        check_objects(SerenaContextReport.model_json_schema())
+        check_objects(ResearchBrief.model_json_schema())
         self.assertEqual(SERENA_SCHEMA_VERSION, "portable-v1")
         self.assertEqual(SERENA_STRUCTURED_OUTPUT_METHOD, "function_calling")
 

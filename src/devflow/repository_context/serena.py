@@ -47,6 +47,33 @@ class SerenaSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ResearchBrief(SerenaSchema):
+    interpretation: str = Field(description="Concise interpretation of the requested outcome.")
+    terms_and_definitions: list[str] = Field(
+        description="Important request terms and tentative definitions; return [] if none."
+    )
+    assumptions: list[str] = Field(description="Explicit working assumptions; return [] if none.")
+    clarification_questions: list[str] = Field(
+        description=(
+            "Only material questions whose answers could change files, architecture, persistence, "
+            "public behavior, or research direction; return [] if none."
+        )
+    )
+    expected_flow: list[str] = Field(
+        description="Expected functional or data-flow stages to verify; return [] if none."
+    )
+    likely_areas: list[str] = Field(description="Likely repository areas and why.")
+    excluded_areas: list[str] = Field(
+        description="Areas currently believed irrelevant, with reasons; return [] if none."
+    )
+    research_questions: list[str] = Field(
+        description="Three to eight independently answerable questions required for completion."
+    )
+    completion_evidence: list[str] = Field(
+        description="Evidence that would demonstrate the research is complete."
+    )
+
+
 class RelevantFile(SerenaSchema):
     path: str = Field(description="Repository-relative path; maximum 500 characters.")
     role: Literal[
@@ -449,6 +476,127 @@ def _call_signature(name: str, arguments: dict[str, Any]) -> str:
     return json.dumps([name, arguments], sort_keys=True, ensure_ascii=False, default=str)
 
 
+def _is_unscoped_pattern_search(name: str, arguments: dict[str, Any]) -> bool:
+    if name != "search_for_pattern":
+        return False
+    scope_keys = (
+        "relative_path", "path", "paths_include_glob", "include_glob", "file_mask"
+    )
+    return not any(arguments.get(key) not in (None, "", ".", "**/*") for key in scope_keys)
+
+
+def _question_key(value: str) -> str:
+    return " ".join(value.lower().split()).rstrip("?.!")
+
+
+def _apply_brief_coverage(report: dict[str, Any], brief: dict[str, Any]) -> list[dict[str, Any]]:
+    resolutions = {
+        _question_key(item.get("question", "")): item
+        for item in report.get("question_resolutions", [])
+    }
+    ledger = [
+        {
+            "question": item["question"],
+            "status": item["status"],
+            "answer": item.get("answer", ""),
+            "source": "human" if item["status"] == "human_answered" else "research brief",
+        }
+        for item in brief.get("clarification_answers", [])
+    ]
+    for question in brief.get("research_questions", []):
+        resolution = resolutions.get(_question_key(question))
+        if resolution:
+            ledger.append({
+                "question": question,
+                "status": "self_answered",
+                "answer": resolution.get("resolution", ""),
+                "source": resolution.get("source", ""),
+            })
+            continue
+        ledger.append({"question": question, "status": "unresolved", "answer": "", "source": ""})
+        if not any(
+            _question_key(item.get("description", "")) == _question_key(question)
+            for item in report.get("missing_context", [])
+        ):
+            report.setdefault("missing_context", []).append({
+                "kind": "repository",
+                "description": question,
+                "suggested_action": "Answer this research-brief coverage question with evidence.",
+                "related_files": [],
+                "related_symbols": [],
+            })
+    if any(item["status"] == "unresolved" for item in ledger) and report.get("status") == "sufficient":
+        report["status"] = "needs_repository_context"
+    report["research_brief"] = brief
+    report["inquiry_ledger"] = ledger
+    return ledger
+
+
+def _clarify_research_brief(brief: dict[str, Any], *, auto_approve: bool) -> None:
+    questions = brief.get("clarification_questions", [])
+    answers = []
+    if not questions:
+        return
+    print(f"Research brief found {len(questions)} material clarification question(s).")
+    for question in questions:
+        print(f"  Question: {question}")
+        if auto_approve or not sys.stdin.isatty():
+            answers.append({"question": question, "status": "assumed", "answer": ""})
+            continue
+        while True:
+            action = input("[A]nswer, [S]kip with stated assumption, [D]ocumentation hint, or [R]esearch? [R]: ").strip().lower()
+            if action in {"a", "answer"}:
+                answer = input("Answer:\n> ").strip()
+                if answer:
+                    answers.append({"question": question, "status": "human_answered", "answer": answer})
+                    break
+            elif action in {"s", "skip"}:
+                assumption = input("Assumption to use (blank keeps the brief assumption):\n> ").strip()
+                answers.append({"question": question, "status": "assumed", "answer": assumption})
+                break
+            elif action in {"d", "documentation"}:
+                hint = input("Documentation path or guidance:\n> ").strip()
+                if hint:
+                    answers.append({"question": question, "status": "human_answered", "answer": hint})
+                    break
+            else:
+                answers.append({"question": question, "status": "researching", "answer": ""})
+                break
+    brief["clarification_answers"] = answers
+
+
+async def _create_research_brief(
+    request: str,
+    model,
+    limiter: _ModelRequestLimiter,
+    *,
+    auto_approve: bool,
+) -> dict[str, Any]:
+    print("Context stage: request interpretation")
+    brief_model = model.with_structured_output(
+        ResearchBrief, method=SERENA_STRUCTURED_OUTPUT_METHOD
+    )
+    brief = await limiter.invoke(
+        brief_model,
+        (
+            "Prepare a concise research brief before using repository tools. Interpret the "
+            "development request, expose assumptions, identify only material clarification "
+            "questions, and define three to eight independently answerable research questions. "
+            "Do not claim repository facts and do not propose implementation details as facts. "
+            "Prefer asking for clarification when different meanings would send research into "
+            "different application areas.\n\nDEVELOPMENT REQUEST\n" + request
+        ),
+        "Create repository research brief",
+    )
+    result = brief.model_dump()
+    _clarify_research_brief(result, auto_approve=auto_approve)
+    print(
+        f"Research brief: questions={len(result['research_questions'])} "
+        f"clarifications={len(result['clarification_questions'])}"
+    )
+    return result
+
+
 def _should_continue(
     report: dict[str, Any],
     *,
@@ -516,6 +664,7 @@ async def _explore_round(
     max_tool_call_budget: int,
     is_final_round: bool,
     active_questions: list[str] | None = None,
+    research_brief: dict[str, Any] | None = None,
     auto_approve: bool = False,
     live_transcript_path: Path | None = None,
 ):
@@ -539,6 +688,7 @@ async def _explore_round(
         )),
         HumanMessage(content=(
             f"Development request:\n{request}\n\n"
+            f"Approved research brief:\n{json.dumps(research_brief or {}, ensure_ascii=False)}\n\n"
             f"Exploration round: {round_number}\n"
             f"Prior grounded report:\n{prior_text}\n\n"
             f"{_round_focus_instruction(is_final_round)}"
@@ -549,6 +699,7 @@ async def _explore_round(
     tool_result_chars = 0
     active_budget = tool_call_budget
     stop_round = False
+    consecutive_tool_timeouts = 0
     live_transcript_path = live_transcript_path or Path("serena-live-transcript.json")
 
     while calls_attempted < max_tool_call_budget and not stop_round:
@@ -619,6 +770,21 @@ async def _explore_round(
                 ))
                 calls_attempted += 1
                 continue
+            if _is_unscoped_pattern_search(name, arguments):
+                result_text = (
+                    "Devflow did not execute this repository-wide pattern search. Narrow it with "
+                    "relative_path or a bounded inclusion glob."
+                )
+                events.append({
+                    "round": round_number,
+                    "tool": name,
+                    "arguments": arguments,
+                    "blocked_unscoped_search": True,
+                    "result": result_text,
+                })
+                messages.append(ToolMessage(content=result_text, tool_call_id=call["id"]))
+                calls_attempted += 1
+                continue
             signature = _call_signature(name, arguments)
             if signature in executed_signatures:
                 result_text = (
@@ -635,7 +801,12 @@ async def _explore_round(
             else:
                 executed_signatures.add(signature)
                 started_at = perf_counter()
-                result = await session.call_tool(name, arguments=arguments)
+                try:
+                    result = await session.call_tool(name, arguments=arguments)
+                    call_timeout = False
+                except (TimeoutError, asyncio.TimeoutError):
+                    result = None
+                    call_timeout = True
                 elapsed = round(perf_counter() - started_at, 3)
                 remaining_chars = max(
                     0, config.max_round_tool_result_chars - tool_result_chars
@@ -648,8 +819,19 @@ async def _explore_round(
                     })
                     stop_round = True
                     break
-                result_text = _tool_result_text(
-                    result, min(config.max_tool_result_chars, remaining_chars)
+                result_text = (
+                    "Serena tool call timed out. Narrow the next retrieval operation."
+                    if call_timeout else _tool_result_text(
+                        result, min(config.max_tool_result_chars, remaining_chars)
+                    )
+                )
+                is_error = call_timeout or bool(
+                    getattr(result, "isError", False)
+                    or getattr(result, "is_error", False)
+                )
+                timed_out = call_timeout or (is_error and "timeout" in result_text.lower())
+                consecutive_tool_timeouts = (
+                    consecutive_tool_timeouts + 1 if timed_out else 0
                 )
                 tool_result_chars += len(result_text)
                 events.append({
@@ -659,16 +841,22 @@ async def _explore_round(
                     "duplicate": False,
                     "result": result_text,
                     "elapsed_seconds": elapsed,
-                    "is_error": bool(
-                        getattr(result, "isError", False)
-                        or getattr(result, "is_error", False)
-                    ),
+                    "is_error": is_error,
+                    "timed_out": timed_out,
                 })
             messages.append(ToolMessage(
                 content=result_text,
                 tool_call_id=call["id"],
             ))
             calls_attempted += 1
+            if consecutive_tool_timeouts >= 2:
+                events.append({
+                    "round": round_number,
+                    "reason": "consecutive_tool_timeouts",
+                    "consecutive_timeouts": consecutive_tool_timeouts,
+                })
+                stop_round = True
+                break
         if stop_round:
             break
         if calls_attempted >= active_budget and active_budget < max_tool_call_budget:
@@ -743,6 +931,9 @@ async def _explore_round(
         "Be concise. Do not copy source code, tool results, or the transcript into the report. "
         "Represent evidence only as short factual claims paired with file paths or symbol names. "
         "Keep the complete report comfortably below the output-token limit.\n"
+        "For every research question in the approved research brief, copy the question exactly "
+        "into question_resolutions with grounded evidence when answered, or keep it in "
+        "missing_context. Do not declare sufficient while a research question is uncovered.\n"
         f"{supplemental_instruction}\n"
         f"DEVELOPMENT REQUEST\n{request}\n\n"
         f"PRIOR REPORT\n{prior_text}\n\n"
@@ -766,7 +957,9 @@ async def _explore_round(
                 else "Retry compact context report"
             )
             report = await request_limiter.invoke(structured_report_model, prompt, purpose)
-            return report.model_dump(), events, calls_attempted, attempt_errors
+            report_dict = report.model_dump()
+            _apply_brief_coverage(report_dict, research_brief or {})
+            return report_dict, events, calls_attempted, attempt_errors
         except Exception as error:
             attempt_errors.append({
                 "attempt": attempt,
@@ -817,6 +1010,24 @@ async def _explore_with_session(
         config.model_request_min_interval_seconds,
         config.context_input_target_tokens,
     )
+    if active_questions:
+        research_brief = {
+            "interpretation": "Targeted supplemental repository research.",
+            "terms_and_definitions": [],
+            "assumptions": [],
+            "clarification_questions": [],
+            "expected_flow": [],
+            "likely_areas": [],
+            "excluded_areas": [],
+            "research_questions": list(active_questions),
+            "completion_evidence": ["A grounded resolution and source for every active question."],
+        }
+    elif initial_report and initial_report.get("research_brief"):
+        research_brief = initial_report["research_brief"]
+    else:
+        research_brief = await _create_research_brief(
+            request, model, request_limiter, auto_approve=auto_approve
+        )
 
     for round_number in range(1, config.max_rounds + 1):
         remaining = config.max_total_tool_calls - total_tool_calls
@@ -842,6 +1053,7 @@ async def _explore_with_session(
             max_tool_call_budget=remaining,
             is_final_round=is_final_round,
             active_questions=active_questions,
+            research_brief=research_brief,
             auto_approve=auto_approve,
             live_transcript_path=live_transcript_path,
         )
@@ -1004,6 +1216,8 @@ def run_serena_context(
     transcript_path = run_dir / "serena-transcript.json"
     rounds_path = run_dir / "round-reports.json"
     evidence_path = run_dir / "evidence.json"
+    brief_path = run_dir / "research-brief.json"
+    inquiry_path = run_dir / "inquiry-ledger.json"
     report_path.write_text(
         json.dumps(report, indent=2, ensure_ascii=False),
         encoding="utf-8",
@@ -1016,11 +1230,19 @@ def run_serena_context(
         json.dumps(reports, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    brief_path.write_text(
+        json.dumps(report.get("research_brief", {}), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    inquiry_path.write_text(
+        json.dumps(report.get("inquiry_ledger", []), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
     evidence_path.write_text(
         json.dumps({
             "request": request,
             "active_questions": active_questions or [],
-            "repo_path": config.repo_path,
+            "repo_path": repo_path,
             "branch": branch,
             "head_commit": head_commit,
             "git_status": git_status,
@@ -1072,5 +1294,7 @@ def run_serena_context(
             "rounds": str(rounds_path.resolve()),
             "evidence": str(evidence_path.resolve()),
             "log": str(log_path.resolve()),
+            "research_brief": str(brief_path.resolve()),
+            "inquiry_ledger": str(inquiry_path.resolve()),
         },
     }
