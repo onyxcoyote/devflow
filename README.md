@@ -59,9 +59,6 @@ devflow plan \
 # Propose edits from an approved plan, then ask before applying them
 devflow implement /path/to/plan.json
 
-# Use the installed Aider CLI in an isolated worktree, then review its diff
-devflow implement --backend aider /path/to/plan.json
-
 # Apply a valid proposal without the apply prompt
 devflow implement --yes /path/to/plan.json
 

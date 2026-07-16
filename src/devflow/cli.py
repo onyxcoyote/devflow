@@ -124,10 +124,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--yes", "-y", action="store_true",
         help="Apply a valid implementation proposal without prompting.",
     )
-    implement.add_argument(
-        "--backend", choices=("native", "aider"),
-        help="Override the configured implementation backend.",
-    )
     return parser
 
 
@@ -449,17 +445,9 @@ def _run_implementation(args: argparse.Namespace) -> int:
         model_override=args.model,
     )
     _print_resolved_config(config)
-    result = implementation_flow(
-        args.plan, config, auto_approve=args.yes, backend=args.backend
-    )
+    result = implementation_flow(args.plan, config, auto_approve=args.yes)
     print(f"Proposal: {result['paths']['proposal']}")
     print(f"Evidence: {result['paths']['evidence']}")
-    if result["paths"].get("patch"):
-        print(f"Patch: {result['paths']['patch']}")
-    if result["paths"].get("transcript"):
-        print(f"Aider transcript: {result['paths']['transcript']}")
-    if result["paths"].get("prompt"):
-        print(f"Aider prompt: {result['paths']['prompt']}")
     if result["proposal"]["status"] != "ready":
         return 2
     return 0 if result["applied"] else 2

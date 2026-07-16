@@ -28,14 +28,6 @@ save_model_exchange = false
 max_output_tokens = 8000
 compact_retry_output_tokens = 4000
 
-[implementation]
-# "native" uses Devflow's structured replacement proposal. "aider" runs the
-# installed Aider CLI in an isolated git worktree and presents its diff for approval.
-backend = "native"
-# Optional Aider-specific model name. When omitted, Devflow maps the configured
-# OpenRouter or Ollama model into Aider's provider/model syntax.
-# aider_model = "openrouter/provider/model-name"
-
 [commands]
 # These are trusted commands executed directly by devflow.
 # The model cannot add or change commands.
