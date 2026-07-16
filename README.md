@@ -1,3 +1,23 @@
+WARNING: FOR LEARNING PURPOSES ONLY, DO NOT USE FOR ACTUAL WORK
+
+Note: This is a POC AI workflow tool with highly structured json deliverables between each stage. It applies some interesting ideas of AI workflows, but the cost (1. in term of tokens and 2. in terms of limiting LLM ability to think about solving the problem instead of focusing on meeting the specifications and format of the deliverables) outweighs the benefit. The primary reason for this is that the tradeoff of highly structured and gated checkpoints vs cost of doing does not provide an overall advantage compared to even a simple prompt with a small amount of relevent context.
+
+The potentially useful elements of this are:
+-strict requirements does help keep the output on track in the case of repeated/automated LLM calls
+-requirement elucidation by the LLM asking human to clarify the request before spending a lot of tokens researching
+-human review gates (although free text would have been more efficient than formatted json for that purpose)
+-use of highly structured outputs can be useful when the next stage is a script or LLM requiring strict and consistent inputs (with the caveat of it requiring significantly higher thinking to produce)
+-classification of inputs (when the human gives a hint, should it be taken as fact, or something needing confirmation)
+-the ability to triage research questions between needing further research or asking human for decisions
+-flexibility of the human to provide hints at specific points or not
+-may be able to run on consumer hardware
+
+Some interesting challenges:
+-many LLMs have difficulty with strict output formats, even ones that are otherwise quite capable
+-LLMs struggle to maintain the ability to think independently as the strictness of the guardrails increase, in some cases devolving into whitespace loops
+-each subsequent LLM call loses resolution, even with a great amount of detail (thinking can't be condensed into a summary and then converted back to thinking without losing some details), so in that sense the more complete the prompt is (and yet focused to what degree is possible), the better.
+-paradoxically, larger models actually performed worse than mid-range ones, in terms of being potentially more cautious and producing less output for a specific task that could be considered something like "using exactly 12 grep commands, find all file that is relevant to a changing a specific field and put it in a specific json format"
+
 
 Setup:
 ===============================
